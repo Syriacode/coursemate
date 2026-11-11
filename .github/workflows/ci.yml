@@ -21,7 +21,7 @@ jobs:
           POSTGRES_PASSWORD: coursemate # local development only, not a secret
           POSTGRES_DB: coursemate
         ports:
-          - 5433:5432
+          - "5433:5432"
         options: >-
           --health-cmd "pg_isready -U coursemate -d coursemate"
           --health-interval 5s
