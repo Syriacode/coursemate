@@ -587,8 +587,9 @@ words in Python. That's fine for a few hundred chunks; with millions you'd let P
 nothing more:
 
 ```python
-def bm25_term_score(tf: int, df: int, n_docs: int, doc_len: int, avg_len: float,
-                    k1: float = 1.5, b: float = 0.75) -> float:
+def bm25_term_score(
+    tf: int, df: int, n_docs: int, doc_len: int, avg_len: float, k1: float = 1.5, b: float = 0.75
+) -> float:
     """How much one query word adds to one chunk's score."""
     if tf == 0:
         return 0.0
