@@ -4,7 +4,7 @@ import psycopg
 import pytest
 
 TEST_DB = os.environ.get(
-    "DATABASE_URL", "postgresql://coursemate:coursemate@localhost:5433/coursemate"
+    "DATABASE_URL", "postgresql://coursemate:coursemate@127.0.0.1:5433/coursemate"
 )
 
 

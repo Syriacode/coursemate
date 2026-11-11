@@ -11,6 +11,22 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      COURSEMATE_REQUIRE_DB: "1"
+    services:
+      db:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: coursemate
+          POSTGRES_PASSWORD: coursemate # local development only, not a secret
+          POSTGRES_DB: coursemate
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U coursemate -d coursemate"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v5
         with:
@@ -31,3 +47,6 @@ jobs:
 
       - name: Test
         run: python -m pytest -v
+
+      - name: Smoke test the CLI
+        run: python -m coursemate --provider fake ingest notes/sample --reset
