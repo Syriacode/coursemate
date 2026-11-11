@@ -7,6 +7,7 @@ from typing import TextIO
 from coursemate.embeddings import Embedder, FakeEmbedder, OllamaEmbedder
 from coursemate.ingest import ingest
 from coursemate.llm import FakeClient, LLMClient, LLMError, OllamaClient
+from coursemate.rag import DEFAULT_MIN_SCORE, answer
 from coursemate.store import PgVectorStore, StoreError
 
 DEFAULT_DB = "postgresql://coursemate:coursemate@127.0.0.1:5433/coursemate"
@@ -41,6 +42,10 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser = subcommands.add_parser("search")
     search_parser.add_argument("query")
     search_parser.add_argument("-k", type=int, default=4)
+    ask_parser = subcommands.add_parser("ask")
+    ask_parser.add_argument("question")
+    ask_parser.add_argument("-k", type=int, default=4)
+    ask_parser.add_argument("--min-score", type=float, default=DEFAULT_MIN_SCORE)
     return parser
 
 
@@ -60,7 +65,7 @@ def main(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
     except SystemExit as exc:
         return int(exc.code or 0)
 
-    embedder, _client = make_models(args)
+    embedder, client = make_models(args)
     try:
         store = PgVectorStore(args.db_url, table=args.table)
         try:
@@ -69,11 +74,26 @@ def main(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
                 print(f"ingested {report.files} files, {report.chunks} chunks", file=stdout)
                 for source, count in store.counts().items():
                     print(f"  {source}: {count} chunks", file=stdout)
-            else:
+            elif args.command == "search":
                 store.prepare(embedder.model, embedder.dim)
                 for hit in store.search(embedder.embed_query(args.query), args.k):
                     print(f"{hit.score:.3f}  {hit.source} > {hit.heading}", file=stdout)
                     print(f"       {hit.text[:100]!r}", file=stdout)
+            else:
+                store.prepare(embedder.model, embedder.dim)
+                result = answer(
+                    args.question, embedder, store, client, k=args.k, min_score=args.min_score
+                )
+                print(result.answer, file=stdout)
+                for number, hit in enumerate(result.sources, start=1):
+                    print(
+                        f" [{number}] {hit.source} > {hit.heading} ({hit.score:.2f})", file=stdout
+                    )
+                if result.reason:
+                    print(f"(why: {result.reason})", file=stderr)
+                print(
+                    f"(tokens: {result.input_tokens} in, {result.output_tokens} out)", file=stderr
+                )
         finally:
             store.close()
     except (StoreError, LLMError) as err:

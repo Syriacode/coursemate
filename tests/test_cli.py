@@ -68,3 +68,18 @@ def test_ingest_then_search_with_fake_models(cli_table):
 
     assert code == 1
     assert "--reset" in err
+
+
+@pytest.mark.db
+def test_ask_with_fake_models(cli_table):
+    code, _, _ = run(*fake_args(cli_table), "ingest", str(SAMPLE), "--reset")
+    assert code == 0
+
+    code, out, err = run(
+        *fake_args(cli_table), "ask", "What is the late work policy?", "--min-score", "0.1"
+    )
+
+    assert code == 0
+    assert "Fake provider: no model was called." in out
+    assert "[1] syllabus.md" in out
+    assert "tokens: 100 in, 20 out" in err
