@@ -1,4 +1,5 @@
 import io
+import json
 import uuid
 from pathlib import Path
 
@@ -93,4 +94,21 @@ def test_eval_retrieval_with_fake_models():
     assert code == 0
     assert "embedding model: fake" in out
     assert "recall@3" in out
+    for mode in ("vector", "keyword", "hybrid"):
+        assert any(line.split()[0] == mode for line in out.splitlines())
     assert "questions: 13 keyword, 12 paraphrase" in out
+
+
+def test_eval_retrieval_can_save_the_run(tmp_path):
+    golden = Path(__file__).parents[1] / "evals" / "retrieval_golden.jsonl"
+    saved = tmp_path / "runs" / "fake.json"
+
+    code, out, _ = run(
+        "--provider", "fake", "eval-retrieval", str(SAMPLE), str(golden), "--save", str(saved)
+    )
+
+    assert code == 0
+    assert "saved run to" in out
+    run_data = json.loads(saved.read_text(encoding="utf-8"))
+    assert run_data["model"] == "fake"
+    assert list(run_data["modes"]) == ["vector", "keyword", "hybrid"]

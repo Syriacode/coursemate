@@ -60,6 +60,19 @@ def test_reingesting_a_source_replaces_its_chunks(store):
     assert len(texts) == 3
 
 
+def test_all_chunks_are_ordered_by_source_then_index(store):
+    store.prepare("toy", 2)
+    a0 = Chunk("a.md", "A > One", 0, "first")
+    a1 = Chunk("a.md", "A > Two", 1, "second")
+    b0 = Chunk("b.md", "B > One", 0, "third")
+
+    # insert out of order: b.md first, and a.md's chunks in reverse index order
+    store.replace_source("b.md", [b0], [[0.0, 1.0]])
+    store.replace_source("a.md", [a1, a0], [[0.5, 0.5], [1.0, 0.0]])
+
+    assert store.all_chunks() == [a0, a1, b0]
+
+
 def test_switching_embedding_model_requires_reset(store):
     store.prepare("nomic-embed-text", 768)
 

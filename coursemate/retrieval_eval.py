@@ -1,3 +1,4 @@
+import json
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -7,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from coursemate.embeddings import Embedder
 from coursemate.ingest import ingest
+from coursemate.retrieval import MODES, Mode, retrieve
 from coursemate.store import Hit, MemoryStore
 
 
@@ -113,14 +115,41 @@ def build_index(notes: Path | str, embedder: Embedder) -> MemoryStore:
 
 
 def evaluate(
-    golden: list[GoldenQuestion], embedder: Embedder, store: MemoryStore, depth: int = 5
-) -> ModeResult:
-    """Search each question once, `depth` hits deep, and record the rank of the right section."""
-    ranks: dict[str, int | None] = {}
-    for question in golden:
-        hits = store.search(embedder.embed_query(question.question), depth)
-        ranks[question.id] = first_relevant_rank(hits, question.expected)
-    return ModeResult("vector", ranks)
+    golden: list[GoldenQuestion],
+    embedder: Embedder,
+    store: MemoryStore,
+    depth: int = 5,
+    modes: tuple[Mode, ...] = MODES,
+) -> list[ModeResult]:
+    """For each mode, search every question `depth` hits deep and record the right rank."""
+    results = []
+    for mode in modes:
+        ranks: dict[str, int | None] = {}
+        for question in golden:
+            hits = retrieve(question.question, embedder, store, depth, mode).hits
+            ranks[question.id] = first_relevant_rank(hits, question.expected)
+        results.append(ModeResult(mode, ranks))
+    return results
+
+
+def save_run(path: Path | str, results: list[ModeResult], model: str) -> None:
+    """Write each mode's recall@1/3/5, MRR and per-question ranks to a JSON file."""
+    run = {
+        "model": model,
+        "modes": {
+            result.mode: {
+                "recall@1": result.recall(1),
+                "recall@3": result.recall(3),
+                "recall@5": result.recall(5),
+                "mrr": result.mrr(),
+                "ranks": result.ranks,
+            }
+            for result in results
+        },
+    }
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(run, indent=2) + "\n", encoding="utf-8")
 
 
 def _recall_for_kind(result: ModeResult, golden: list[GoldenQuestion], kind: str, k: int) -> float:

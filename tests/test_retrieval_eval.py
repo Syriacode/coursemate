@@ -5,9 +5,11 @@ import pytest
 
 from coursemate.chunking import chunk_document
 from coursemate.embeddings import FakeEmbedder
+from coursemate.retrieval import MODES
 from coursemate.retrieval_eval import (
     Expected,
     GoldenSetError,
+    ModeResult,
     build_index,
     evaluate,
     first_relevant_rank,
@@ -15,6 +17,7 @@ from coursemate.retrieval_eval import (
     load_golden,
     mean_reciprocal_rank,
     recall_at_k,
+    save_run,
 )
 from coursemate.store import Hit
 
@@ -131,7 +134,27 @@ def test_evaluate_on_sample_notes_with_fake_embedder():
     golden = load_golden(GOLDEN)
     embedder = FakeEmbedder()
 
-    result = evaluate(golden, embedder, build_index(SAMPLE_NOTES, embedder))
+    results = evaluate(golden, embedder, build_index(SAMPLE_NOTES, embedder))
 
-    assert set(result.ranks) == {q.id for q in golden}
-    assert 0.0 <= result.recall(1) <= result.recall(3) <= result.recall(5) <= 1.0
+    assert [r.mode for r in results] == list(MODES)
+    for result in results:
+        assert set(result.ranks) == {q.id for q in golden}
+        assert 0.0 <= result.recall(1) <= result.recall(3) <= result.recall(5) <= 1.0
+
+
+def test_save_run_writes_metrics_and_ranks(tmp_path):
+    results = [
+        ModeResult("vector", {"q01": 1, "q02": None}),
+        ModeResult("keyword", {"q01": 3, "q02": 2}),
+    ]
+    path = tmp_path / "runs" / "toy.json"  # the runs folder doesn't exist yet
+
+    save_run(path, results, "toy-model")
+
+    run = json.loads(path.read_text(encoding="utf-8"))
+    assert run["model"] == "toy-model"
+    assert list(run["modes"]) == ["vector", "keyword"]
+    assert run["modes"]["vector"]["recall@1"] == 0.5
+    assert run["modes"]["vector"]["mrr"] == pytest.approx(0.5)
+    assert run["modes"]["vector"]["ranks"] == {"q01": 1, "q02": None}
+    assert run["modes"]["keyword"]["recall@3"] == 1.0

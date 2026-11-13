@@ -33,6 +33,8 @@ class VectorStore(Protocol):
 
     def counts(self) -> dict[str, int]: ...
 
+    def all_chunks(self) -> list[Chunk]: ...
+
 
 def to_pgvector(vec: Vector) -> str:
     return "[" + ",".join(repr(float(x)) for x in vec) + "]"
@@ -74,6 +76,9 @@ class MemoryStore:
     def counts(self) -> dict[str, int]:
         counted = Counter(chunk.source for chunk, _ in self.rows)
         return dict(sorted(counted.items()))
+
+    def all_chunks(self) -> list[Chunk]:
+        return sorted((chunk for chunk, _ in self.rows), key=lambda c: (c.source, c.index))
 
 
 class PgVectorStore:
@@ -164,6 +169,17 @@ class PgVectorStore:
             "SELECT source, count(*) FROM {table} GROUP BY source ORDER BY source"
         ).format(table=sql.Identifier(self.table))
         return {source: n for source, n in self.conn.execute(query).fetchall()}
+
+    def all_chunks(self) -> list[Chunk]:
+        # COLLATE "C" sorts by raw bytes, like Python, so both stores order sources the same way
+        query = sql.SQL(
+            "SELECT source, heading, content, chunk_index FROM {table} "
+            'ORDER BY source COLLATE "C", chunk_index'
+        ).format(table=sql.Identifier(self.table))
+        return [
+            Chunk(source, heading, index, content)
+            for source, heading, content, index in self.conn.execute(query).fetchall()
+        ]
 
     def close(self) -> None:
         self.conn.close()

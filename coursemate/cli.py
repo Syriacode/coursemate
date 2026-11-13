@@ -15,6 +15,7 @@ from coursemate.retrieval_eval import (
     format_table,
     load_golden,
     misses,
+    save_run,
 )
 from coursemate.store import PgVectorStore, StoreError
 
@@ -58,6 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     eval_parser.add_argument("notes", type=Path)
     eval_parser.add_argument("golden", type=Path)
     eval_parser.add_argument("--show-misses", action="store_true")
+    eval_parser.add_argument("--save", type=Path, metavar="PATH")
     return parser
 
 
@@ -71,11 +73,13 @@ def make_models(args: argparse.Namespace) -> tuple[Embedder, LLMClient]:
 
 
 def run_eval(args: argparse.Namespace, embedder: Embedder, stdout: TextIO, stderr: TextIO) -> int:
-    """Score vector search on the golden set, all in memory (no database)."""
+    """Score vector, keyword and hybrid search on the golden set, in memory (no database)."""
     try:
         golden = load_golden(args.golden)
         store = build_index(args.notes, embedder)
-        results = [evaluate(golden, embedder, store)]
+        results = evaluate(golden, embedder, store)
+        if args.save:
+            save_run(args.save, results, embedder.model)
     except (GoldenSetError, LLMError, OSError) as err:
         print(f"error: {err}", file=stderr)
         return 1
@@ -85,6 +89,8 @@ def run_eval(args: argparse.Namespace, embedder: Embedder, stdout: TextIO, stder
     if args.show_misses:
         for line in misses(results, golden):
             print(line, file=stdout)
+    if args.save:
+        print(f"saved run to {args.save}", file=stdout)
     return 0
 
 
