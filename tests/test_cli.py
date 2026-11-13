@@ -1,4 +1,5 @@
 import io
+import json
 import uuid
 from pathlib import Path
 
@@ -54,7 +55,7 @@ def test_ingest_then_search_with_fake_models(cli_table):
     code, out, _ = run(*fake_args(cli_table), "ingest", str(SAMPLE), "--reset")
 
     assert code == 0
-    assert "ingested 4 files" in out
+    assert "ingested 8 files" in out
     assert "syllabus.md" in out
 
     code, out, _ = run(*fake_args(cli_table), "search", "late work grace days", "-k", "2")
@@ -71,6 +72,22 @@ def test_ingest_then_search_with_fake_models(cli_table):
 
 
 @pytest.mark.db
+def test_search_puts_the_lab_4_section_first_in_every_mode(cli_table):
+    code, _, _ = run(*fake_args(cli_table), "ingest", str(SAMPLE), "--reset")
+    assert code == 0
+
+    for mode in ("vector", "keyword", "hybrid"):
+        code, out, _ = run(
+            *fake_args(cli_table), "search", "When is Lab 4 due?", "-k", "3", "--mode", mode
+        )
+
+        first_line = out.splitlines()[0]
+        assert code == 0, mode
+        assert "lecture-02-hash-tables.md" in first_line, mode
+        assert first_line.endswith("> Lab 4"), mode
+
+
+@pytest.mark.db
 def test_ask_with_fake_models(cli_table):
     code, _, _ = run(*fake_args(cli_table), "ingest", str(SAMPLE), "--reset")
     assert code == 0
@@ -83,3 +100,31 @@ def test_ask_with_fake_models(cli_table):
     assert "Fake provider: no model was called." in out
     assert "[1] syllabus.md" in out
     assert "tokens: 100 in, 20 out" in err
+
+
+def test_eval_retrieval_with_fake_models():
+    golden = Path(__file__).parents[1] / "evals" / "retrieval_golden.jsonl"
+
+    code, out, _ = run("--provider", "fake", "eval-retrieval", str(SAMPLE), str(golden))
+
+    assert code == 0
+    assert "embedding model: fake" in out
+    assert "recall@3" in out
+    for mode in ("vector", "keyword", "hybrid"):
+        assert any(line.split()[0] == mode for line in out.splitlines())
+    assert "questions: 13 keyword, 12 paraphrase" in out
+
+
+def test_eval_retrieval_can_save_the_run(tmp_path):
+    golden = Path(__file__).parents[1] / "evals" / "retrieval_golden.jsonl"
+    saved = tmp_path / "runs" / "fake.json"
+
+    code, out, _ = run(
+        "--provider", "fake", "eval-retrieval", str(SAMPLE), str(golden), "--save", str(saved)
+    )
+
+    assert code == 0
+    assert "saved run to" in out
+    run_data = json.loads(saved.read_text(encoding="utf-8"))
+    assert run_data["model"] == "fake"
+    assert list(run_data["modes"]) == ["vector", "keyword", "hybrid"]

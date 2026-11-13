@@ -1,0 +1,25 @@
+{"id": "q01", "question": "What percentage of the grade is the final exam?", "expected": [{"source": "syllabus.md", "section": "Grading"}], "kind": "keyword", "reviewed": true}
+{"id": "q02", "question": "If I turn in an assignment after it was due, how much gets taken off?", "expected": [{"source": "syllabus.md", "section": "Late work"}], "kind": "paraphrase", "reviewed": true}
+{"id": "q03", "question": "Am I allowed to hand in a program that ChatGPT wrote for me?", "expected": [{"source": "syllabus.md", "section": "Academic integrity"}], "kind": "paraphrase", "reviewed": true}
+{"id": "q04", "question": "How long do I have to submit a regrade request?", "expected": [{"source": "syllabus.md", "section": "Regrade requests"}], "kind": "keyword", "reviewed": true}
+{"id": "q05", "question": "What is the formal definition of f(n) is O(g(n))?", "expected": [{"source": "lecture-01-big-o.md", "section": "Formal definition"}], "kind": "keyword", "reviewed": true}
+{"id": "q06", "question": "Why can't I just time two programs with a stopwatch to see which is faster?", "expected": [{"source": "lecture-01-big-o.md", "section": "Why measure growth"}], "kind": "paraphrase", "reviewed": true}
+{"id": "q07", "question": "What is the average case of linear search?", "expected": [{"source": "lecture-01-big-o.md", "section": "Best, average and worst case"}], "kind": "keyword", "reviewed": true}
+{"id": "q08", "question": "When is Lab 4 due?", "expected": [{"source": "lecture-02-hash-tables.md", "section": "Lab 4"}], "kind": "keyword", "reviewed": true}
+{"id": "q09", "question": "What happens when the buckets get too full, and why does adding stay cheap on average?", "expected": [{"source": "lecture-02-hash-tables.md", "section": "Load factor and resizing"}], "kind": "paraphrase", "reviewed": true}
+{"id": "q10", "question": "How does separate chaining handle collisions?", "expected": [{"source": "lecture-02-hash-tables.md", "section": "Collisions and separate chaining"}], "kind": "keyword", "reviewed": true}
+{"id": "q11", "question": "How do I take out an item that has both a left and a right child?", "expected": [{"source": "lecture-03-binary-search-trees.md", "section": "Delete"}], "kind": "paraphrase", "reviewed": true}
+{"id": "q12", "question": "Which traversal of a BST gives the keys in sorted order?", "expected": [{"source": "lecture-03-binary-search-trees.md", "section": "Traversals"}], "kind": "keyword", "reviewed": true}
+{"id": "q13", "question": "Why does my tree get slow if I add values that are already in order?", "expected": [{"source": "lecture-03-binary-search-trees.md", "section": "Height and running time"}], "kind": "paraphrase", "reviewed": true}
+{"id": "q14", "question": "Is quicksort stable?", "expected": [{"source": "lecture-04-sorting.md", "section": "Stability"}], "kind": "keyword", "reviewed": true}
+{"id": "q15", "question": "What can make the partition-based method degrade to quadratic time?", "expected": [{"source": "lecture-04-sorting.md", "section": "Quicksort"}], "kind": "paraphrase", "reviewed": true}
+{"id": "q16", "question": "Is it worth putting my data in order first if I'll look things up many times?", "expected": [{"source": "lecture-04-sorting.md", "section": "Why sorting matters"}], "kind": "paraphrase", "reviewed": true}
+{"id": "q17", "question": "What does BFS find in an unweighted graph?", "expected": [{"source": "lecture-05-graphs.md", "section": "Breadth-first search"}], "kind": "keyword", "reviewed": true}
+{"id": "q18", "question": "Should I keep connections in a grid, or keep for each point the places it links to?", "expected": [{"source": "lecture-05-graphs.md", "section": "Representing a graph"}], "kind": "paraphrase", "reviewed": true}
+{"id": "q19", "question": "Which traversal helps me spot a loop or schedule jobs that rely on other jobs?", "expected": [{"source": "lecture-05-graphs.md", "section": "Depth-first search"}], "kind": "paraphrase", "reviewed": true}
+{"id": "q20", "question": "Why does my function that calls itself never stop and crash?", "expected": [{"source": "lecture-06-recursion.md", "section": "Recursion and base cases"}], "kind": "paraphrase", "reviewed": true}
+{"id": "q21", "question": "How does memoization speed up Fibonacci?", "expected": [{"source": "lecture-06-recursion.md", "section": "Memoization"}], "kind": "keyword", "reviewed": true}
+{"id": "q22", "question": "What is optimal substructure?", "expected": [{"source": "lecture-06-recursion.md", "section": "Dynamic programming"}], "kind": "keyword", "reviewed": true}
+{"id": "q23", "question": "When is Project 1 due?", "expected": [{"source": "projects.md", "section": "Project 1: Text statistics"}], "kind": "keyword", "reviewed": true}
+{"id": "q24", "question": "Can I work in pairs on Project 2?", "expected": [{"source": "projects.md", "section": "Project 2: Campus route planner"}], "kind": "keyword", "reviewed": true}
+{"id": "q25", "question": "The automatic checks on my repo keep failing, what should I do?", "expected": [{"source": "projects.md", "section": "Submitting work"}], "kind": "paraphrase", "reviewed": true}

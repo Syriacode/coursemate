@@ -8,6 +8,16 @@ from coursemate.embeddings import Embedder, FakeEmbedder, OllamaEmbedder
 from coursemate.ingest import ingest
 from coursemate.llm import FakeClient, LLMClient, LLMError, OllamaClient
 from coursemate.rag import DEFAULT_MIN_SCORE, answer
+from coursemate.retrieval import MODES, retrieve
+from coursemate.retrieval_eval import (
+    GoldenSetError,
+    build_index,
+    evaluate,
+    format_table,
+    load_golden,
+    misses,
+    save_run,
+)
 from coursemate.store import PgVectorStore, StoreError
 
 DEFAULT_DB = "postgresql://coursemate:coursemate@127.0.0.1:5433/coursemate"
@@ -42,10 +52,17 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser = subcommands.add_parser("search")
     search_parser.add_argument("query")
     search_parser.add_argument("-k", type=int, default=4)
+    search_parser.add_argument("--mode", choices=MODES, default="vector")
     ask_parser = subcommands.add_parser("ask")
     ask_parser.add_argument("question")
     ask_parser.add_argument("-k", type=int, default=4)
+    ask_parser.add_argument("--mode", choices=MODES, default="vector")
     ask_parser.add_argument("--min-score", type=float, default=DEFAULT_MIN_SCORE)
+    eval_parser = subcommands.add_parser("eval-retrieval")
+    eval_parser.add_argument("notes", type=Path)
+    eval_parser.add_argument("golden", type=Path)
+    eval_parser.add_argument("--show-misses", action="store_true")
+    eval_parser.add_argument("--save", type=Path, metavar="PATH")
     return parser
 
 
@@ -58,6 +75,28 @@ def make_models(args: argparse.Namespace) -> tuple[Embedder, LLMClient]:
     )
 
 
+def run_eval(args: argparse.Namespace, embedder: Embedder, stdout: TextIO, stderr: TextIO) -> int:
+    """Score vector, keyword and hybrid search on the golden set, in memory (no database)."""
+    try:
+        golden = load_golden(args.golden)
+        store = build_index(args.notes, embedder)
+        results = evaluate(golden, embedder, store)
+        if args.save:
+            save_run(args.save, results, embedder.model)
+    except (GoldenSetError, LLMError, OSError) as err:
+        print(f"error: {err}", file=stderr)
+        return 1
+
+    print(f"embedding model: {embedder.model}", file=stdout)
+    print(format_table(results, golden), file=stdout)
+    if args.show_misses:
+        for line in misses(results, golden):
+            print(line, file=stdout)
+    if args.save:
+        print(f"saved run to {args.save}", file=stdout)
+    return 0
+
+
 def main(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
     try:
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -66,6 +105,9 @@ def main(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
         return int(exc.code or 0)
 
     embedder, client = make_models(args)
+    if args.command == "eval-retrieval":
+        return run_eval(args, embedder, stdout, stderr)
+
     try:
         store = PgVectorStore(args.db_url, table=args.table)
         try:
@@ -76,13 +118,20 @@ def main(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
                     print(f"  {source}: {count} chunks", file=stdout)
             elif args.command == "search":
                 store.prepare(embedder.model, embedder.dim)
-                for hit in store.search(embedder.embed_query(args.query), args.k):
+                hits = retrieve(args.query, embedder, store, args.k, args.mode).hits
+                for hit in hits:
                     print(f"{hit.score:.3f}  {hit.source} > {hit.heading}", file=stdout)
                     print(f"       {hit.text[:100]!r}", file=stdout)
             else:
                 store.prepare(embedder.model, embedder.dim)
                 result = answer(
-                    args.question, embedder, store, client, k=args.k, min_score=args.min_score
+                    args.question,
+                    embedder,
+                    store,
+                    client,
+                    k=args.k,
+                    min_score=args.min_score,
+                    mode=args.mode,
                 )
                 print(result.answer, file=stdout)
                 for number, hit in enumerate(result.sources, start=1):
