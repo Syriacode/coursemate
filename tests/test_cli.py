@@ -54,7 +54,7 @@ def test_ingest_then_search_with_fake_models(cli_table):
     code, out, _ = run(*fake_args(cli_table), "ingest", str(SAMPLE), "--reset")
 
     assert code == 0
-    assert "ingested 4 files" in out
+    assert "ingested 8 files" in out
     assert "syllabus.md" in out
 
     code, out, _ = run(*fake_args(cli_table), "search", "late work grace days", "-k", "2")

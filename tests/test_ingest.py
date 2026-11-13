@@ -24,7 +24,7 @@ def test_ingest_sample_notes_twice_gives_the_same_index():
     counts_after_first = store.counts()
     second = ingest(SAMPLE_NOTES, embedder, store)
 
-    assert first.files == 4
+    assert first.files == 8
     assert first.chunks >= 4
     assert second == first
     assert store.counts() == counts_after_first
