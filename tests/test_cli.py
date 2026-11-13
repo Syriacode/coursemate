@@ -72,6 +72,22 @@ def test_ingest_then_search_with_fake_models(cli_table):
 
 
 @pytest.mark.db
+def test_search_puts_the_lab_4_section_first_in_every_mode(cli_table):
+    code, _, _ = run(*fake_args(cli_table), "ingest", str(SAMPLE), "--reset")
+    assert code == 0
+
+    for mode in ("vector", "keyword", "hybrid"):
+        code, out, _ = run(
+            *fake_args(cli_table), "search", "When is Lab 4 due?", "-k", "3", "--mode", mode
+        )
+
+        first_line = out.splitlines()[0]
+        assert code == 0, mode
+        assert "lecture-02-hash-tables.md" in first_line, mode
+        assert first_line.endswith("> Lab 4"), mode
+
+
+@pytest.mark.db
 def test_ask_with_fake_models(cli_table):
     code, _, _ = run(*fake_args(cli_table), "ingest", str(SAMPLE), "--reset")
     assert code == 0

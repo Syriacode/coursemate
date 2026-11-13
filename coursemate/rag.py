@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from coursemate.embeddings import Embedder
 from coursemate.llm import LLMClient, Message
+from coursemate.retrieval import Mode, retrieve
 from coursemate.store import Hit, VectorStore
 
 # TODO: replace with your Step 6 number (0.0 means the score gate is off)
@@ -85,11 +86,15 @@ def answer(
     *,
     k: int = 4,
     min_score: float = DEFAULT_MIN_SCORE,
+    mode: Mode = "vector",
 ) -> RagAnswer:
     # 1. Retrieve. If nothing is close enough, refuse before paying for a model call.
-    hits = store.search(embedder.embed_query(question), k)
-    if not hits or hits[0].score < min_score:
-        best = f"{hits[0].score:.2f}" if hits else "none"
+    # The gate uses the best *cosine* score: keyword (BM25) and hybrid (RRF) scores are on
+    # different scales, so hits[0].score can't be compared with min_score in those modes.
+    retrieval = retrieve(question, embedder, store, k, mode)
+    hits = retrieval.hits
+    if not hits or retrieval.best_vector_score < min_score:
+        best = f"{retrieval.best_vector_score:.2f}" if hits else "none"
         return dont_know(f"no note scored above {min_score} (best: {best})")
 
     # 2. Generate from the retrieved sources only.

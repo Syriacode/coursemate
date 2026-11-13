@@ -63,6 +63,33 @@ def test_low_retrieval_score_refuses_without_calling_the_model(index):
     assert "best" in result.reason
 
 
+def test_hybrid_mode_refuses_a_far_off_question_without_calling_the_model(index):
+    embedder, store = index
+    client = FakeClient([])
+
+    result = answer(
+        "Who won the 2022 World Cup?", embedder, store, client, k=2, min_score=0.5, mode="hybrid"
+    )
+
+    assert not result.found
+    assert result.answer == IDK
+    assert client.calls == []
+    assert "best" in result.reason
+
+
+def test_hybrid_mode_answers_a_good_question(index):
+    embedder, store = index
+    client = FakeClient([reply()])
+
+    # hybrid hits carry RRF scores (about 0.03), far below min_score; the gate must use the
+    # best cosine score instead, or this good question would be refused
+    result = answer(QUESTION, embedder, store, client, k=2, min_score=0.1, mode="hybrid")
+
+    assert result.found
+    assert [h.heading for h in result.sources] == ["Syllabus > Late work"]
+    assert len(client.calls) == 1
+
+
 def test_model_saying_not_found_means_i_dont_know(index):
     embedder, store = index
     client = FakeClient([reply(found=False, text="", citations=())])

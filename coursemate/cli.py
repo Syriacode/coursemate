@@ -8,6 +8,7 @@ from coursemate.embeddings import Embedder, FakeEmbedder, OllamaEmbedder
 from coursemate.ingest import ingest
 from coursemate.llm import FakeClient, LLMClient, LLMError, OllamaClient
 from coursemate.rag import DEFAULT_MIN_SCORE, answer
+from coursemate.retrieval import MODES, retrieve
 from coursemate.retrieval_eval import (
     GoldenSetError,
     build_index,
@@ -51,9 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser = subcommands.add_parser("search")
     search_parser.add_argument("query")
     search_parser.add_argument("-k", type=int, default=4)
+    search_parser.add_argument("--mode", choices=MODES, default="vector")
     ask_parser = subcommands.add_parser("ask")
     ask_parser.add_argument("question")
     ask_parser.add_argument("-k", type=int, default=4)
+    ask_parser.add_argument("--mode", choices=MODES, default="vector")
     ask_parser.add_argument("--min-score", type=float, default=DEFAULT_MIN_SCORE)
     eval_parser = subcommands.add_parser("eval-retrieval")
     eval_parser.add_argument("notes", type=Path)
@@ -115,13 +118,20 @@ def main(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
                     print(f"  {source}: {count} chunks", file=stdout)
             elif args.command == "search":
                 store.prepare(embedder.model, embedder.dim)
-                for hit in store.search(embedder.embed_query(args.query), args.k):
+                hits = retrieve(args.query, embedder, store, args.k, args.mode).hits
+                for hit in hits:
                     print(f"{hit.score:.3f}  {hit.source} > {hit.heading}", file=stdout)
                     print(f"       {hit.text[:100]!r}", file=stdout)
             else:
                 store.prepare(embedder.model, embedder.dim)
                 result = answer(
-                    args.question, embedder, store, client, k=args.k, min_score=args.min_score
+                    args.question,
+                    embedder,
+                    store,
+                    client,
+                    k=args.k,
+                    min_score=args.min_score,
+                    mode=args.mode,
                 )
                 print(result.answer, file=stdout)
                 for number, hit in enumerate(result.sources, start=1):
