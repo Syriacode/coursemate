@@ -83,3 +83,14 @@ def test_ask_with_fake_models(cli_table):
     assert "Fake provider: no model was called." in out
     assert "[1] syllabus.md" in out
     assert "tokens: 100 in, 20 out" in err
+
+
+def test_eval_retrieval_with_fake_models():
+    golden = Path(__file__).parents[1] / "evals" / "retrieval_golden.jsonl"
+
+    code, out, _ = run("--provider", "fake", "eval-retrieval", str(SAMPLE), str(golden))
+
+    assert code == 0
+    assert "embedding model: fake" in out
+    assert "recall@3" in out
+    assert "questions: 13 keyword, 12 paraphrase" in out

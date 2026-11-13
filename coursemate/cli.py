@@ -8,6 +8,14 @@ from coursemate.embeddings import Embedder, FakeEmbedder, OllamaEmbedder
 from coursemate.ingest import ingest
 from coursemate.llm import FakeClient, LLMClient, LLMError, OllamaClient
 from coursemate.rag import DEFAULT_MIN_SCORE, answer
+from coursemate.retrieval_eval import (
+    GoldenSetError,
+    build_index,
+    evaluate,
+    format_table,
+    load_golden,
+    misses,
+)
 from coursemate.store import PgVectorStore, StoreError
 
 DEFAULT_DB = "postgresql://coursemate:coursemate@127.0.0.1:5433/coursemate"
@@ -46,6 +54,10 @@ def build_parser() -> argparse.ArgumentParser:
     ask_parser.add_argument("question")
     ask_parser.add_argument("-k", type=int, default=4)
     ask_parser.add_argument("--min-score", type=float, default=DEFAULT_MIN_SCORE)
+    eval_parser = subcommands.add_parser("eval-retrieval")
+    eval_parser.add_argument("notes", type=Path)
+    eval_parser.add_argument("golden", type=Path)
+    eval_parser.add_argument("--show-misses", action="store_true")
     return parser
 
 
@@ -58,6 +70,24 @@ def make_models(args: argparse.Namespace) -> tuple[Embedder, LLMClient]:
     )
 
 
+def run_eval(args: argparse.Namespace, embedder: Embedder, stdout: TextIO, stderr: TextIO) -> int:
+    """Score vector search on the golden set, all in memory (no database)."""
+    try:
+        golden = load_golden(args.golden)
+        store = build_index(args.notes, embedder)
+        results = [evaluate(golden, embedder, store)]
+    except (GoldenSetError, LLMError, OSError) as err:
+        print(f"error: {err}", file=stderr)
+        return 1
+
+    print(f"embedding model: {embedder.model}", file=stdout)
+    print(format_table(results, golden), file=stdout)
+    if args.show_misses:
+        for line in misses(results, golden):
+            print(line, file=stdout)
+    return 0
+
+
 def main(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
     try:
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -66,6 +96,9 @@ def main(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
         return int(exc.code or 0)
 
     embedder, client = make_models(args)
+    if args.command == "eval-retrieval":
+        return run_eval(args, embedder, stdout, stderr)
+
     try:
         store = PgVectorStore(args.db_url, table=args.table)
         try:
