@@ -13,10 +13,10 @@ Part of my [learning roadmap](https://github.com/Syriacode/Mini-Blockchain/blob/
 
 ```bash
 docker compose up -d
-pip install -e ".[dev]"
-python -m pytest
-python -m ruff check .
-python -m ruff format --check .
+py -m pip install -e ".[dev]"
+py -m pytest
+py -m ruff check .
+py -m ruff format --check .
 ```
 
 With Ollama running, pull the two local models, ingest the sample notes, then search and ask:
@@ -24,17 +24,17 @@ With Ollama running, pull the two local models, ingest the sample notes, then se
 ```bash
 ollama pull nomic-embed-text
 ollama pull qwen2.5:3b
-python -m coursemate ingest notes/sample --reset
-python -m coursemate search "How many points do I lose for a late project?" -k 3
-python -m coursemate ask "How many points do I lose for a late project?"
+py -m coursemate ingest notes/sample --reset
+py -m coursemate search "How many points do I lose for a late project?" -k 3
+py -m coursemate ask "How many points do I lose for a late project?"
 ```
 
 No model needed: the fake provider gives hash-based vectors and a canned reply, so it only checks the plumbing.
 
 ```bash
-python -m coursemate --provider fake ingest notes/sample --reset
-python -m coursemate --provider fake search "late work grace days"
-python -m coursemate --provider fake ask "What is the late work policy?" --min-score 0.1
+py -m coursemate --provider fake ingest notes/sample --reset
+py -m coursemate --provider fake search "late work grace days"
+py -m coursemate --provider fake ask "What is the late work policy?" --min-score 0.1
 ```
 
 The index remembers which embedding model built it and refuses to mix, so switching between fake and real models needs `--reset` on the next `ingest`.
@@ -42,7 +42,7 @@ The index remembers which embedding model built it and refuses to mix, so switch
 Tests that call the real models are skipped by default. Run them by hand:
 
 ```bash
-python -m pytest -m live -v
+py -m pytest -m live -v
 ```
 
 ## Design decisions
