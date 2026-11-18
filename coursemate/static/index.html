@@ -41,6 +41,7 @@
 
       let sessionId = null; // which conversation we are in; kept only in this variable
       let busy = false;     // true while an answer is streaming
+      let controller = null; // lets "New conversation" cancel the request that is still running
 
       const messages = document.getElementById("messages");
       const box = document.getElementById("question");
@@ -134,12 +135,15 @@
         const msg = addMessage("assistant", "");
         const textDiv = addLine(msg, "text", "");
         let finished = false; // did we get a done or error event?
+        const mine = new AbortController(); // this request's own cancel switch
+        controller = mine;
 
         try {
           const response = await fetch("/api/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ question, session_id: sessionId }),
+            signal: mine.signal,
           });
 
           if (!response.ok) {
@@ -153,6 +157,8 @@
             finished = true;
           } else {
             for await (const { event, data } of readSse(response)) {
+              // A chunk can hold several events; once cancelled, ignore the rest of them.
+              if (mine.signal.aborted) break;
               if (event === "session") sessionId = data.session_id;
               else if (event === "token") textDiv.textContent += data.text;
               else if (event === "done") { showDone(msg, textDiv, data); finished = true; }
@@ -161,11 +167,17 @@
           }
           if (!finished) addLine(msg, "error", "The connection closed before the answer finished.");
         } catch (err) {
-          addLine(msg, "error", "Network error: " + err.message);
+          // Cancelling on purpose is not an error: the reset button already cleaned up.
+          if (err.name !== "AbortError") addLine(msg, "error", "Network error: " + err.message);
         } finally {
-          busy = false;
-          sendButton.disabled = false;
-          box.focus();
+          // Only the newest request may reset the page state. A cancelled one must not
+          // switch Send back on in the middle of a newer request.
+          if (controller === mine) {
+            controller = null;
+            busy = false;
+            sendButton.disabled = false;
+            box.focus();
+          }
         }
       }
 
@@ -178,8 +190,12 @@
         }
       });
       document.getElementById("reset").addEventListener("click", () => {
-        sessionId = null;          // forget the conversation
-        messages.replaceChildren(); // remove every message
+        if (controller) controller.abort(); // stop any answer that is still streaming
+        controller = null;
+        busy = false;                       // so Send works again straight away
+        sendButton.disabled = false;
+        sessionId = null;                   // forget the conversation
+        messages.replaceChildren();         // remove every message
         box.focus();
       });
 
