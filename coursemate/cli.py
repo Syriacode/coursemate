@@ -1,9 +1,14 @@
 import argparse
+import asyncio
 import contextlib
 import os
 from pathlib import Path
 from typing import TextIO
 
+import uvicorn
+
+from coursemate.api import create_app
+from coursemate.compare import average_tokens, compare, format_costs, format_runs
 from coursemate.embeddings import Embedder, FakeEmbedder, OllamaEmbedder
 from coursemate.ingest import ingest
 from coursemate.llm import FakeClient, LLMClient, LLMError, OllamaClient
@@ -19,6 +24,7 @@ from coursemate.retrieval_eval import (
     save_run,
 )
 from coursemate.store import PgVectorStore, StoreError
+from coursemate.streaming import make_streamer
 
 DEFAULT_DB = "postgresql://coursemate:coursemate@127.0.0.1:5433/coursemate"
 
@@ -63,6 +69,29 @@ def build_parser() -> argparse.ArgumentParser:
     eval_parser.add_argument("golden", type=Path)
     eval_parser.add_argument("--show-misses", action="store_true")
     eval_parser.add_argument("--save", type=Path, metavar="PATH")
+    serve_parser = subcommands.add_parser("serve")
+    serve_parser.add_argument(
+        "--llm",
+        choices=["ollama", "openai", "anthropic", "fake"],
+        default=None,
+        help="which model answers (default: the value of --provider)",
+    )
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=8000)
+    serve_parser.add_argument("-k", type=int, default=4)
+    serve_parser.add_argument("--mode", choices=MODES, default="vector")
+    serve_parser.add_argument("--min-score", type=float, default=DEFAULT_MIN_SCORE)
+    compare_parser = subcommands.add_parser("compare")
+    compare_parser.add_argument("notes", type=Path)
+    compare_parser.add_argument(
+        "--llm",
+        nargs="+",
+        choices=["ollama", "openai", "anthropic", "fake"],
+        default=["ollama", "openai", "anthropic"],
+        help="which providers to compare (default: all three formats)",
+    )
+    compare_parser.add_argument("-n", type=int, default=3, help="how many golden questions")
+    compare_parser.add_argument("--golden", type=Path, default=Path("evals/retrieval_golden.jsonl"))
     return parser
 
 
@@ -97,6 +126,58 @@ def run_eval(args: argparse.Namespace, embedder: Embedder, stdout: TextIO, stder
     return 0
 
 
+def run_compare(
+    args: argparse.Namespace, embedder: Embedder, stdout: TextIO, stderr: TextIO
+) -> int:
+    """Ask the same golden questions through each provider and print times and prices."""
+    try:
+        # first, so a missing API key stops everything before any indexing or model call
+        llms = [make_streamer(name, args.chat_model, args.ollama_url) for name in args.llm]
+        golden = load_golden(args.golden)[: args.n]
+        if not golden:
+            raise ValueError("no golden questions to ask (is -n 0?)")
+        store = build_index(args.notes, embedder)  # in memory: no Postgres needed
+        runs = asyncio.run(compare(llms, golden, embedder, store))
+    except (GoldenSetError, LLMError, OSError, ValueError) as err:
+        print(f"error: {err}", file=stderr)
+        return 1
+
+    print(format_runs(runs), file=stdout)
+    print(file=stdout)
+    tokens = average_tokens(runs)
+    if tokens is None:
+        print("no answer reached a model, so there is nothing to price", file=stdout)
+    else:
+        print(format_costs(*tokens), file=stdout)
+    return 0
+
+
+def run_serve(args: argparse.Namespace, embedder: Embedder, stderr: TextIO) -> int:
+    """Start the web API. It blocks until the server is stopped (Ctrl+C)."""
+    try:
+        # first, so a bad provider name or a missing API key fails before we touch the database
+        llm = make_streamer(args.llm or args.provider, args.chat_model, args.ollama_url)
+    except (ValueError, LLMError) as err:
+        print(f"error: {err}", file=stderr)
+        return 1
+
+    try:
+        store = PgVectorStore(args.db_url, table=args.table)
+        try:
+            # a wrong embedding model fails here, with the usual message
+            store.prepare(embedder.model, embedder.dim)
+            app = create_app(
+                embedder, store, llm, k=args.k, min_score=args.min_score, mode=args.mode
+            )
+            uvicorn.run(app, host=args.host, port=args.port)
+        finally:
+            store.close()
+    except (StoreError, LLMError) as err:
+        print(f"error: {err}", file=stderr)
+        return 1
+    return 0
+
+
 def main(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
     try:
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -107,6 +188,10 @@ def main(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
     embedder, client = make_models(args)
     if args.command == "eval-retrieval":
         return run_eval(args, embedder, stdout, stderr)
+    if args.command == "compare":
+        return run_compare(args, embedder, stdout, stderr)
+    if args.command == "serve":
+        return run_serve(args, embedder, stderr)
 
     try:
         store = PgVectorStore(args.db_url, table=args.table)

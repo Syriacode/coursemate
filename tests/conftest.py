@@ -8,6 +8,11 @@ TEST_DB = os.environ.get(
 )
 
 
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
+
 def db_available() -> bool:
     try:
         psycopg.connect(TEST_DB, connect_timeout=2).close()

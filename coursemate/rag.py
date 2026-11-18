@@ -7,8 +7,7 @@ from coursemate.llm import LLMClient, Message
 from coursemate.retrieval import Mode, retrieve
 from coursemate.store import Hit, VectorStore
 
-# TODO: replace with your Step 6 number (0.0 means the score gate is off)
-DEFAULT_MIN_SCORE = 0.0  # calibrated in Step 6 from coursemate search scores
+DEFAULT_MIN_SCORE = 0.55  # calibrated in Step 6 from coursemate search scores
 
 IDK = "I don't know. I couldn't find that in the course notes."
 

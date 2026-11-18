@@ -102,6 +102,49 @@ def test_ask_with_fake_models(cli_table):
     assert "tokens: 100 in, 20 out" in err
 
 
+def test_serve_with_a_hosted_llm_and_no_key_is_a_clear_error(monkeypatch):
+    # "openai" now has a streamer, but its default URL is a hosted API that costs money, so
+    # without a key it refuses. The check runs before the database is touched: no Postgres needed.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+    code, _, err = run("--provider", "fake", "serve", "--llm", "openai")
+
+    assert code == 1
+    assert "costs money" in err
+
+
+@pytest.mark.db
+def test_serve_starts_the_app_with_defaults(cli_table, monkeypatch):
+    code, _, _ = run(*fake_args(cli_table), "ingest", str(SAMPLE), "--reset")
+    assert code == 0
+    started = {}
+
+    def fake_run(app, host, port):
+        started.update(app=app, host=host, port=port)
+
+    monkeypatch.setattr("uvicorn.run", fake_run)
+
+    code, _, err = run(*fake_args(cli_table), "serve")
+
+    assert code == 0, err
+    assert (started["host"], started["port"]) == ("127.0.0.1", 8000)
+    assert started["app"].title == "CourseMate"
+
+
+@pytest.mark.db
+def test_serve_fails_with_the_usual_message_for_a_different_embedding_model(cli_table):
+    code, _, _ = run(*fake_args(cli_table), "ingest", str(SAMPLE), "--reset")
+    assert code == 0
+
+    code, _, err = run(
+        "--provider", "ollama", "--db-url", TEST_DB, "--table", cli_table, "serve", "--llm", "fake"
+    )
+
+    assert code == 1
+    assert "--reset" in err
+
+
 def test_eval_retrieval_with_fake_models():
     golden = Path(__file__).parents[1] / "evals" / "retrieval_golden.jsonl"
 

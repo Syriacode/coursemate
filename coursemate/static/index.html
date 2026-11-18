@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CourseMate</title>
+    <!-- An empty icon, so the browser doesn't ask the server for a favicon that doesn't exist -->
+    <link rel="icon" href="data:," />
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 42rem; margin: 0 auto; padding: 1rem; }
+      header { display: flex; justify-content: space-between; align-items: baseline; }
+      #model { color: #666; font-size: 0.9rem; }
+      #messages { margin: 1rem 0; }
+      .msg { margin: 0.75rem 0; padding: 0.5rem 0.75rem; border-radius: 0.5rem; }
+      .user { background: #e8f0fe; white-space: pre-wrap; }
+      .assistant { background: #f4f4f4; }
+      .text { white-space: pre-wrap; }
+      .idk { color: #666; font-style: italic; }   /* "I don't know" looks different on purpose */
+      .error { color: #c00; }
+      .sources, .meta { font-size: 0.85rem; color: #555; margin-top: 0.25rem; }
+      .meta { color: #888; }
+      textarea { width: 100%; box-sizing: border-box; font: inherit; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>CourseMate</h1>
+      <span id="model">loading…</span>
+    </header>
+
+    <div id="messages"></div>
+
+    <textarea id="question" rows="3" placeholder="Ask about the course notes (Enter sends, Shift+Enter = new line)"></textarea>
+    <button id="send">Send</button>
+    <button id="reset">New conversation</button>
+
+    <script>
+      // SECURITY: text from the server or the user is untrusted, so we only ever use
+      // textContent (shows it as plain text). The HTML-inserting properties would run any
+      // HTML hidden in it, so this page never uses them.
+
+      let sessionId = null; // which conversation we are in; kept only in this variable
+      let busy = false;     // true while an answer is streaming
+      let controller = null; // lets "New conversation" cancel the request that is still running
+
+      const messages = document.getElementById("messages");
+      const box = document.getElementById("question");
+      const sendButton = document.getElementById("send");
+
+      // Make a <div class="msg ..."> with some plain text and add it to the message list.
+      function addMessage(className, text) {
+        const div = document.createElement("div");
+        div.className = "msg " + className;
+        div.textContent = text;
+        messages.appendChild(div);
+        return div;
+      }
+
+      // Make a small <div> with some text and put it inside another element.
+      function addLine(parent, className, text) {
+        const div = document.createElement("div");
+        div.className = className;
+        div.textContent = text;
+        parent.appendChild(div);
+        return div;
+      }
+
+      // Show which provider and model are answering.
+      async function loadHealth() {
+        try {
+          const info = await (await fetch("/api/health")).json();
+          document.getElementById("model").textContent = info.provider + " · " + info.model;
+        } catch {
+          document.getElementById("model").textContent = "server not reachable";
+        }
+      }
+
+      // Read a server-sent-events stream. This is sse_data() from Python, in JavaScript:
+      // collect text, cut it at blank lines ("\n\n"), and turn each event into {event, data}.
+      async function* readSse(response) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const blocks = buffer.split("\n\n");
+          buffer = blocks.pop(); // the last piece may be half an event: keep it for next time
+          for (const block of blocks) {
+            let event = "message";
+            const dataLines = [];
+            for (const line of block.split("\n")) {
+              if (line.startsWith("event:")) event = line.slice(6).trim();
+              else if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
+            }
+            if (dataLines.length > 0) yield { event, data: JSON.parse(dataLines.join("\n")) };
+          }
+        }
+      }
+
+      // The answer is complete and has been checked by the server.
+      function showDone(msg, textDiv, data) {
+        // Either way we replace the streamed words with the checked answer.
+        // If the check failed (found is false), that is "I don't know...": the words are retracted.
+        textDiv.textContent = data.answer;
+        if (data.found) {
+          for (const s of data.sources) {
+            addLine(msg, "sources", "[" + s.n + "] " + s.source + " > " + s.heading);
+          }
+        } else {
+          textDiv.classList.add("idk");
+        }
+
+        let meta =
+          "first word " + Math.round(data.first_token_ms) + " ms · total " +
+          Math.round(data.total_ms) + " ms · tokens " + data.input_tokens + " in / " +
+          data.output_tokens + " out";
+        if ("cost_usd" in data) { // Step 9 adds this field
+          if (data.cost_usd === null) meta += " · cost unknown";
+          else if (data.cost_usd === 0) meta += " · $0 (local)";
+          else meta += " · $" + data.cost_usd.toPrecision(2);
+        }
+        addLine(msg, "meta", meta);
+      }
+
+      async function send() {
+        const question = box.value.trim();
+        if (question === "" || busy) return;
+        busy = true;
+        sendButton.disabled = true;
+        box.value = "";
+
+        addMessage("user", question);
+        const msg = addMessage("assistant", "");
+        const textDiv = addLine(msg, "text", "");
+        let finished = false; // did we get a done or error event?
+        const mine = new AbortController(); // this request's own cancel switch
+        controller = mine;
+
+        try {
+          const response = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question, session_id: sessionId }),
+            signal: mine.signal,
+          });
+
+          if (!response.ok) {
+            if (response.status === 404) sessionId = null; // the server forgot us: start fresh
+            let detail = "";
+            try {
+              const body = await response.json();
+              if (typeof body.detail === "string") detail = ": " + body.detail;
+            } catch {}
+            addLine(msg, "error", "HTTP " + response.status + detail);
+            finished = true;
+          } else {
+            for await (const { event, data } of readSse(response)) {
+              // A chunk can hold several events; once cancelled, ignore the rest of them.
+              if (mine.signal.aborted) break;
+              if (event === "session") sessionId = data.session_id;
+              else if (event === "token") textDiv.textContent += data.text;
+              else if (event === "done") { showDone(msg, textDiv, data); finished = true; }
+              else if (event === "error") { addLine(msg, "error", data.message); finished = true; }
+            }
+          }
+          if (!finished) addLine(msg, "error", "The connection closed before the answer finished.");
+        } catch (err) {
+          // Cancelling on purpose is not an error: the reset button already cleaned up.
+          if (err.name !== "AbortError") addLine(msg, "error", "Network error: " + err.message);
+        } finally {
+          // Only the newest request may reset the page state. A cancelled one must not
+          // switch Send back on in the middle of a newer request.
+          if (controller === mine) {
+            controller = null;
+            busy = false;
+            sendButton.disabled = false;
+            box.focus();
+          }
+        }
+      }
+
+      sendButton.addEventListener("click", send);
+      box.addEventListener("keydown", (e) => {
+        // Enter sends; Shift+Enter keeps the normal new line
+        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+          e.preventDefault();
+          send();
+        }
+      });
+      document.getElementById("reset").addEventListener("click", () => {
+        if (controller) controller.abort(); // stop any answer that is still streaming
+        controller = null;
+        busy = false;                       // so Send works again straight away
+        sendButton.disabled = false;
+        sessionId = null;                   // forget the conversation
+        messages.replaceChildren();         // remove every message
+        box.focus();
+      });
+
+      loadHealth();
+    </script>
+  </body>
+</html>

@@ -19,7 +19,10 @@ py -m ruff format --check .
 
 - Activate the venv before starting Claude Code: `source .venv/Scripts/activate`.
 - Start Postgres with `docker compose up -d` before running tests.
-- Tests must never call a real model: use `FakeEmbedder` and `FakeClient`. Real calls go in tests marked `@pytest.mark.live`.
+- Tests never call a real model or the network: use `FakeStreamer`, `FakeClient`, `FakeEmbedder`, and `httpx.MockTransport` for HTTP.
+- Live tests are marked `@pytest.mark.live`.
+- Never call a hosted API (`api.openai.com`, `api.anthropic.com`): it costs money.
+- Async tests use `@pytest.mark.anyio`.
 - Never read, print or commit anything in `notes/private/`.
 - Run `py -m ruff format .` after editing Python files.
 
