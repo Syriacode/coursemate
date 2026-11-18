@@ -27,6 +27,9 @@ notebook = [
 [tool.setuptools]
 packages = ["coursemate"]
 
+[tool.setuptools.package-data]
+coursemate = ["static/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
@@ -34,6 +37,10 @@ markers = [
     "db: needs Postgres + pgvector from docker compose (skipped if it isn't running)",
 ]
 addopts = "-m 'not live'"
+filterwarnings = [
+    # harmless: newer Starlette prefers httpx2 for TestClient; we use httpx for our own HTTP code
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
 
 [tool.ruff]
 line-length = 100

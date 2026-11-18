@@ -102,6 +102,46 @@ def test_ask_with_fake_models(cli_table):
     assert "tokens: 100 in, 20 out" in err
 
 
+def test_serve_with_an_unknown_llm_is_a_clear_error():
+    # "openai" is a valid choice for the flag, but no streamer is registered for it yet;
+    # the check runs before the database is touched, so no Postgres is needed
+    code, _, err = run("--provider", "fake", "serve", "--llm", "openai")
+
+    assert code == 1
+    assert "unknown provider" in err
+
+
+@pytest.mark.db
+def test_serve_starts_the_app_with_defaults(cli_table, monkeypatch):
+    code, _, _ = run(*fake_args(cli_table), "ingest", str(SAMPLE), "--reset")
+    assert code == 0
+    started = {}
+
+    def fake_run(app, host, port):
+        started.update(app=app, host=host, port=port)
+
+    monkeypatch.setattr("uvicorn.run", fake_run)
+
+    code, _, err = run(*fake_args(cli_table), "serve")
+
+    assert code == 0, err
+    assert (started["host"], started["port"]) == ("127.0.0.1", 8000)
+    assert started["app"].title == "CourseMate"
+
+
+@pytest.mark.db
+def test_serve_fails_with_the_usual_message_for_a_different_embedding_model(cli_table):
+    code, _, _ = run(*fake_args(cli_table), "ingest", str(SAMPLE), "--reset")
+    assert code == 0
+
+    code, _, err = run(
+        "--provider", "ollama", "--db-url", TEST_DB, "--table", cli_table, "serve", "--llm", "fake"
+    )
+
+    assert code == 1
+    assert "--reset" in err
+
+
 def test_eval_retrieval_with_fake_models():
     golden = Path(__file__).parents[1] / "evals" / "retrieval_golden.jsonl"
 

@@ -4,6 +4,9 @@ import os
 from pathlib import Path
 from typing import TextIO
 
+import uvicorn
+
+from coursemate.api import create_app
 from coursemate.embeddings import Embedder, FakeEmbedder, OllamaEmbedder
 from coursemate.ingest import ingest
 from coursemate.llm import FakeClient, LLMClient, LLMError, OllamaClient
@@ -19,6 +22,7 @@ from coursemate.retrieval_eval import (
     save_run,
 )
 from coursemate.store import PgVectorStore, StoreError
+from coursemate.streaming import make_streamer
 
 DEFAULT_DB = "postgresql://coursemate:coursemate@127.0.0.1:5433/coursemate"
 
@@ -63,6 +67,18 @@ def build_parser() -> argparse.ArgumentParser:
     eval_parser.add_argument("golden", type=Path)
     eval_parser.add_argument("--show-misses", action="store_true")
     eval_parser.add_argument("--save", type=Path, metavar="PATH")
+    serve_parser = subcommands.add_parser("serve")
+    serve_parser.add_argument(
+        "--llm",
+        choices=["ollama", "openai", "anthropic", "fake"],
+        default=None,
+        help="which model answers (default: the value of --provider)",
+    )
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=8000)
+    serve_parser.add_argument("-k", type=int, default=4)
+    serve_parser.add_argument("--mode", choices=MODES, default="vector")
+    serve_parser.add_argument("--min-score", type=float, default=DEFAULT_MIN_SCORE)
     return parser
 
 
@@ -97,6 +113,32 @@ def run_eval(args: argparse.Namespace, embedder: Embedder, stdout: TextIO, stder
     return 0
 
 
+def run_serve(args: argparse.Namespace, embedder: Embedder, stderr: TextIO) -> int:
+    """Start the web API. It blocks until the server is stopped (Ctrl+C)."""
+    try:
+        # first, so a bad provider name fails before we touch the database
+        llm = make_streamer(args.llm or args.provider, args.chat_model, args.ollama_url)
+    except ValueError as err:
+        print(f"error: {err}", file=stderr)
+        return 1
+
+    try:
+        store = PgVectorStore(args.db_url, table=args.table)
+        try:
+            # a wrong embedding model fails here, with the usual message
+            store.prepare(embedder.model, embedder.dim)
+            app = create_app(
+                embedder, store, llm, k=args.k, min_score=args.min_score, mode=args.mode
+            )
+            uvicorn.run(app, host=args.host, port=args.port)
+        finally:
+            store.close()
+    except (StoreError, LLMError) as err:
+        print(f"error: {err}", file=stderr)
+        return 1
+    return 0
+
+
 def main(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
     try:
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -107,6 +149,8 @@ def main(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
     embedder, client = make_models(args)
     if args.command == "eval-retrieval":
         return run_eval(args, embedder, stdout, stderr)
+    if args.command == "serve":
+        return run_serve(args, embedder, stderr)
 
     try:
         store = PgVectorStore(args.db_url, table=args.table)
