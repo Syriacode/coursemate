@@ -151,3 +151,13 @@ def test_health_sessions_and_the_placeholder_page(make_client):
     page = client.get("/")
     assert page.status_code == 200
     assert "<title>CourseMate</title>" in page.text
+
+
+def test_chat_page_talks_to_the_api_and_never_uses_inner_html(make_client):
+    client, _ = make_client([])
+
+    page = client.get("/").text
+
+    assert "/api/chat" in page and "getReader" in page
+    # model output and notes are untrusted text: the page may only use textContent
+    assert "innerHTML" not in page
