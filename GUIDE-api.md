@@ -761,7 +761,7 @@ unhappy paths, read the console, and report. Then you fix what it finds.
 **Set up (one time).**
 1. In Chrome, install the **Claude** extension ("Claude in Chrome") from the Chrome Web Store and sign in with the
    same Claude account you use for Claude Code. Check its version on `chrome://extensions`: 1.0.36 or later.
-2. In Claude Code, run `/status` and check you're signed in with your Claude account (not an API key). If not, run
+2. In Claude Code (the `claude` session in your first Git Bash window, not the Claude desktop app), run `/status` and check you're signed in with your Claude account (not an API key). If not, run
    `/login`.
 3. Exit Claude Code (`/exit`) and start it again with the browser connected:
 
