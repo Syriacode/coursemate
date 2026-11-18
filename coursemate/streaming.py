@@ -39,6 +39,7 @@ class StreamingLLM(Protocol):
     provider: str
     model: str
     local: bool  # True when nothing leaves this computer
+    base_url: str  # where the requests go ("" when nothing is sent anywhere)
 
     def stream(
         self,
@@ -64,6 +65,7 @@ class OllamaStreamer:
         http: httpx.AsyncClient | None = None,
     ) -> None:
         self.model = model
+        self.base_url = base_url
         self.num_ctx = num_ctx
         self._http = http or httpx.AsyncClient(base_url=base_url, timeout=timeout)
 
@@ -193,6 +195,7 @@ class OpenAIStreamer:
     ) -> None:
         self.model = model
         base_url = base_url or os.environ.get("OPENAI_BASE_URL") or OPENAI_URL
+        self.base_url = base_url
         self.local = _is_local(base_url)
         # resolved here, not on the first request, so a missing key fails before anything is sent
         self._api_key = _resolve_key(
@@ -268,6 +271,7 @@ class AnthropicStreamer:
     ) -> None:
         self.model = model
         base_url = base_url or os.environ.get("ANTHROPIC_BASE_URL") or ANTHROPIC_URL
+        self.base_url = base_url
         self.local = _is_local(base_url)
         self._api_key = _resolve_key(
             api_key, "ANTHROPIC_API_KEY", base_url, "ANTHROPIC_BASE_URL", "http://localhost:11434"
@@ -342,6 +346,7 @@ class FakeStreamer:
 
     def __init__(self, replies: Sequence[str | Exception] | None = None) -> None:
         self.model = "fake"
+        self.base_url = ""  # nothing is sent anywhere
         self.calls: list[list[Message]] = []
         self._replies = None if replies is None else list(replies)
 

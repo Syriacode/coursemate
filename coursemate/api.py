@@ -10,6 +10,7 @@ from pydantic import BaseModel, StringConstraints
 from coursemate.chat import Final, Token, Turn, stream_answer
 from coursemate.embeddings import Embedder
 from coursemate.llm import LLMError
+from coursemate.pricing import cost_usd, price_for
 from coursemate.rag import DEFAULT_MIN_SCORE
 from coursemate.retrieval import Mode
 from coursemate.sessions import SessionStore, UnknownSession
@@ -98,6 +99,8 @@ def create_app(
 
 
 def done_payload(final: Final, llm: StreamingLLM) -> dict:
+    # None (cost unknown) when the model isn't in the price table; the page shows that as such
+    price = price_for(final.model, llm.local)
     return {
         "found": final.found,
         "answer": final.answer,
@@ -112,4 +115,7 @@ def done_payload(final: Final, llm: StreamingLLM) -> dict:
         "output_tokens": final.output_tokens,
         "first_token_ms": final.first_token_ms,
         "total_ms": final.total_ms,
+        "cost_usd": (
+            None if price is None else cost_usd(final.input_tokens, final.output_tokens, price)
+        ),
     }
