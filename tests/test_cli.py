@@ -102,13 +102,16 @@ def test_ask_with_fake_models(cli_table):
     assert "tokens: 100 in, 20 out" in err
 
 
-def test_serve_with_an_unknown_llm_is_a_clear_error():
-    # "openai" is a valid choice for the flag, but no streamer is registered for it yet;
-    # the check runs before the database is touched, so no Postgres is needed
+def test_serve_with_a_hosted_llm_and_no_key_is_a_clear_error(monkeypatch):
+    # "openai" now has a streamer, but its default URL is a hosted API that costs money, so
+    # without a key it refuses. The check runs before the database is touched: no Postgres needed.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
     code, _, err = run("--provider", "fake", "serve", "--llm", "openai")
 
     assert code == 1
-    assert "unknown provider" in err
+    assert "costs money" in err
 
 
 @pytest.mark.db

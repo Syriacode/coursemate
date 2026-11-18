@@ -116,9 +116,9 @@ def run_eval(args: argparse.Namespace, embedder: Embedder, stdout: TextIO, stder
 def run_serve(args: argparse.Namespace, embedder: Embedder, stderr: TextIO) -> int:
     """Start the web API. It blocks until the server is stopped (Ctrl+C)."""
     try:
-        # first, so a bad provider name fails before we touch the database
+        # first, so a bad provider name or a missing API key fails before we touch the database
         llm = make_streamer(args.llm or args.provider, args.chat_model, args.ollama_url)
-    except ValueError as err:
+    except (ValueError, LLMError) as err:
         print(f"error: {err}", file=stderr)
         return 1
 
