@@ -59,7 +59,7 @@ py -m pytest -m live -v
 ## Design decisions
 
 - **RAG with two "I don't know" gates.** Before the model call, a retrieval threshold (`min_score`) refuses questions whose best chunk scores too low. After it, the reply must match a JSON schema and cite only sources that were actually retrieved. Anything unexpected fails closed to "I don't know".
-- **`min_score` is calibrated from real search scores.** With nomic-embed-text, the top hit scored 0.64–0.74 for the on-topic questions (4 measured) and 0.48–0.49 for the off-topic ones (3 measured). My number: TODO.
+- **`min_score` is calibrated from real search scores.** With nomic-embed-text, the top hit scored 0.64–0.74 for the on-topic questions (4 measured) and 0.48–0.49 for the off-topic ones (3 measured). My number: 0.55.
 - **Heading-aware chunking** (about 1000 characters, 150 overlap). Notes are split by heading first, and the heading path goes into both the embedding and the citation.
 - **nomic-embed-text with task prefixes.** Chunks are embedded with `search_document: ` and questions with `search_query: `, as the model was trained.
 - **Postgres + pgvector instead of a separate vector database.** Vectors sit next to normal columns, queries are SQL, and an HNSW index with cosine distance does the search.
