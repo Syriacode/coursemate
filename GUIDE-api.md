@@ -670,12 +670,20 @@ message in `[tool.pytest.ini_options]`.
 `yield format_sse(...)` lines. Your Step 1 function is now the whole wire format of the API.
 
 **Done when:** first the tests: `!py -m pytest -q` shows `0 failed`. Then the real thing. In your **second** Git Bash
-window (Claude Code stays in the first):
+window (Claude Code stays in the first). A new Git Bash window starts **without** the virtual environment, so
+turn it on first, then check that uvicorn is there:
 
 ```bash
+cd coursemate
+source .venv/Scripts/activate
+py -c "import uvicorn, fastapi; print('ok')"
 py -m coursemate ingest notes/sample --reset
 py -m coursemate serve
 ```
+
+**What you should see:** your prompt starts with `(.venv)`, and the check prints `ok`. If it says
+`ModuleNotFoundError: No module named 'uvicorn'` instead, the venv isn't on (look for `(.venv)` in the prompt), or
+the install from Step 0 went somewhere else: run `py -m pip install -e ".[dev]"` in this window and check again.
 
 You should see `Uvicorn running on http://127.0.0.1:8000`. (If port 8000 is taken, add `--port 8001` and use that
 below.) Open a **third** Git Bash window and **predict** what you'll see, then:
