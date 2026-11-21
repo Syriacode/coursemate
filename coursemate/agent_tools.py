@@ -62,16 +62,28 @@ class Outbox:
         (self.drafts / f"{draft_id:03}.md").write_text(f"# {title}\n\n{body}\n", encoding="utf-8")
         return draft_id
 
-    def read_draft(self, draft_id: int) -> str:
-        path = self.drafts / f"{draft_id:03}.md"
+    def _missing(self, draft_id: object) -> LookupError:
+        ids = ", ".join(str(n) for n in self.draft_ids()) or "none"
+        return LookupError(f"no draft {draft_id}; drafts: {ids}")
+
+    def _number(self, draft_id: int | str) -> int:
+        """A model may pass the id as the string "1"; f"{'1':03}" would be "100", not "001"."""
+        try:
+            return int(draft_id)
+        except (TypeError, ValueError):
+            raise self._missing(repr(draft_id)) from None
+
+    def read_draft(self, draft_id: int | str) -> str:
+        number = self._number(draft_id)
+        path = self.drafts / f"{number:03}.md"
         if not path.is_file():
-            ids = ", ".join(str(n) for n in self.draft_ids()) or "none"
-            raise LookupError(f"no draft {draft_id}; drafts: {ids}")
+            raise self._missing(number)
         return path.read_text(encoding="utf-8")
 
-    def send(self, draft_id: int) -> None:
-        self.read_draft(draft_id)  # raises LookupError if there is no such draft
-        (self.drafts / f"{draft_id:03}.md").replace(self.sent / f"{draft_id:03}.md")
+    def send(self, draft_id: int | str) -> None:
+        number = self._number(draft_id)
+        self.read_draft(number)  # raises LookupError if there is no such draft
+        (self.drafts / f"{number:03}.md").replace(self.sent / f"{number:03}.md")
 
     def texts(self) -> list[str]:
         """Every draft, then every sent message."""
@@ -181,7 +193,7 @@ class CourseTools:
     def send_announcement(self, draft_id: int) -> dict[str, Any]:
         # No approval check here on purpose: the agent loop's gate decides whether this runs.
         self.outbox.send(draft_id)
-        return {"draft_id": draft_id, "status": "sent"}
+        return {"draft_id": int(draft_id), "status": "sent"}
 
     def registry(self) -> dict[str, Callable[..., dict[str, Any]]]:
         return {

@@ -152,3 +152,18 @@ def test_schema_names_match_the_registry(make_tools):
 
     assert names == list(make_tools().registry())
     assert all(schema["type"] == "function" for schema in TOOL_SCHEMAS)
+
+
+def test_a_draft_id_passed_as_a_string_is_converted(make_tools):
+    tools = make_tools()
+    tools.draft_announcement("Lab 4", "Due Friday.")
+
+    result = tools.send_announcement("1")
+
+    assert result == {"draft_id": 1, "status": "sent"}
+    assert tools.outbox.sent_ids() == [1]
+
+
+def test_a_draft_id_that_is_not_a_number_is_a_lookup_error(make_tools):
+    with pytest.raises(LookupError, match="no draft 'abc'"):
+        make_tools().send_announcement("abc")
