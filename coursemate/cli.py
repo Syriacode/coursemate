@@ -8,6 +8,8 @@ from typing import TextIO
 import uvicorn
 
 from coursemate.agent import Approver, run_agent
+from coursemate.agent_eval import AgentCaseError, evaluate_agent, format_report, load_cases
+from coursemate.agent_eval import save_run as save_agent_run
 from coursemate.agent_tools import CourseTools, Outbox
 from coursemate.api import create_app
 from coursemate.compare import average_tokens, compare, format_costs, format_runs
@@ -222,6 +224,31 @@ def run_agent_command(
     return 0
 
 
+def run_eval_agent(
+    args: argparse.Namespace,
+    embedder: Embedder,
+    client: LLMClient,
+    stdout: TextIO,
+    stderr: TextIO,
+) -> int:
+    """Run every agent case in its own outbox against an in-memory index (no database)."""
+    try:
+        cases = load_cases(args.cases)
+        store = build_index(args.notes, embedder)
+        results = evaluate_agent(cases, client, embedder, store, min_score=args.min_score)
+        if args.save:
+            save_agent_run(args.save, results, client.model)
+    except (AgentCaseError, LLMError, OSError) as err:
+        print(f"error: {err}", file=stderr)
+        return 1
+
+    print(f"chat model: {client.model}", file=stdout)
+    print(format_report(results), file=stdout)
+    if args.save:
+        print(f"saved run to {args.save}", file=stdout)
+    return 0
+
+
 def run_serve(args: argparse.Namespace, embedder: Embedder, stderr: TextIO) -> int:
     """Start the web API. It blocks until the server is stopped (Ctrl+C)."""
     try:
@@ -265,8 +292,7 @@ def main(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
     if args.command == "agent":
         return run_agent_command(args, embedder, client, stdout, stderr)
     if args.command == "eval-agent":
-        print("not yet", file=stderr)  # Step 6
-        return 1
+        return run_eval_agent(args, embedder, client, stdout, stderr)
 
     try:
         store = PgVectorStore(args.db_url, table=args.table)

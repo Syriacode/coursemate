@@ -207,10 +207,3 @@ def test_agent_shows_the_draft_and_a_no_sends_nothing(cli_table, tmp_path, monke
     assert asked == ["Send it? [y/N] "]
     assert "(stopped: answer, 3 steps, 300 input tokens)" in err
     assert "(outbox: drafts [1], sent [])" in err
-
-
-def test_eval_agent_is_a_stub_until_step_6():
-    code, _, err = run("--provider", "fake", "eval-agent", str(SAMPLE), "cases.jsonl")
-
-    assert code == 1
-    assert "not yet" in err
