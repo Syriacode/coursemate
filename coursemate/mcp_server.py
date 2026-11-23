@@ -30,6 +30,13 @@ FAKE_MIN_SCORE = 0.1
 READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 # A draft writes a file, but never overwrites or deletes anything, and sends nothing.
 DRAFT = ToolAnnotations(read_only_hint=False, destructive_hint=False)
+# A send cannot be undone, and it reaches people outside this program.
+SEND = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=True)
+SEND_DESCRIPTION = (
+    "Send a saved draft to all students. This cannot be undone. The instructor approves "
+    "drafts in their own terminal, never through this tool; a draft that is not approved "
+    "is refused and nothing is sent."
+)
 
 # Reuse Friday's descriptions so the model reads the same text as in the agent.
 DESCRIPTIONS = {
@@ -47,8 +54,19 @@ def tool_errors() -> Iterator[None]:
         raise ToolError(str(exc)) from exc
 
 
+def send_if_approved(outbox: Outbox, draft_id: int) -> dict[str, Any]:
+    """The server's own gate: send only a draft the instructor approved, word for word."""
+    if not outbox.is_approved(draft_id):
+        raise ToolError(
+            f"draft {draft_id} is not approved, so nothing was sent. Tell the instructor to "
+            f"read it and run this in their own terminal: py -m coursemate approve {draft_id}"
+        )
+    outbox.send(draft_id)
+    return {"draft_id": draft_id, "status": "sent"}
+
+
 def build_server(tools: CourseTools, notes_dir: Path) -> MCPServer:
-    """Serve the three tools that do not send. (notes_dir is for the resources, added later.)"""
+    """Serve the tools. (notes_dir is for the resources, added later.)"""
     server = MCPServer("coursemate")
 
     @server.tool(description=DESCRIPTIONS["search_notes"], annotations=READ)
@@ -65,6 +83,11 @@ def build_server(tools: CourseTools, notes_dir: Path) -> MCPServer:
     def draft_announcement(title: str, body: str) -> dict[str, Any]:
         with tool_errors():
             return tools.draft_announcement(title, body)
+
+    @server.tool(description=SEND_DESCRIPTION, annotations=SEND)
+    def send_announcement(draft_id: int) -> dict[str, Any]:
+        with tool_errors():
+            return send_if_approved(tools.outbox, draft_id)
 
     return server
 

@@ -101,6 +101,9 @@ def build_parser() -> argparse.ArgumentParser:
     agent_parser.add_argument("--outbox", type=Path, default=Path("outbox"))
     agent_parser.add_argument("--max-steps", type=int, default=6)
     agent_parser.add_argument("--min-score", type=float, default=DEFAULT_MIN_SCORE)
+    approve_parser = subcommands.add_parser("approve")
+    approve_parser.add_argument("draft_id", type=int)
+    approve_parser.add_argument("--outbox", type=Path, default=Path("outbox"))
     eval_agent_parser = subcommands.add_parser("eval-agent")
     eval_agent_parser.add_argument("notes", type=Path)
     eval_agent_parser.add_argument("cases", type=Path)
@@ -183,6 +186,27 @@ def ask_instructor(outbox: Outbox, stdout: TextIO) -> Approver:
         return input("Send it? [y/N] ").strip().lower() == "y"
 
     return approve
+
+
+def run_approve(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) -> int:
+    """Show a draft and, if the person at the keyboard says y, approve exactly that text.
+
+    The MCP server only sends approved drafts. Anything but "y" is a no.
+    """
+    outbox = Outbox(args.outbox)
+    try:
+        draft = outbox.read_draft(args.draft_id)
+    except LookupError as err:
+        print(f"error: {err}", file=stderr)
+        return 1
+    print(draft, file=stdout)
+    question = f"Approve draft {args.draft_id} for sending, exactly as shown? [y/N] "
+    if input(question).strip().lower() != "y":
+        print("not approved", file=stdout)
+        return 1
+    outbox.approve(args.draft_id)
+    print(f"approved draft {args.draft_id} (outbox: approved {outbox.approved_ids()})", file=stdout)
+    return 0
 
 
 def run_agent_command(
@@ -281,6 +305,9 @@ def main(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
             args = build_parser().parse_args(argv)
     except SystemExit as exc:
         return int(exc.code or 0)
+
+    if args.command == "approve":  # needs no model and no database
+        return run_approve(args, stdout, stderr)
 
     embedder, client = make_models(args)
     if args.command == "eval-retrieval":

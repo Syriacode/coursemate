@@ -43,8 +43,10 @@ class Outbox:
         self.root = Path(root)
         self.drafts = self.root / "drafts"
         self.sent = self.root / "sent"
+        self.approved = self.root / "approved"
         self.drafts.mkdir(parents=True, exist_ok=True)
         self.sent.mkdir(parents=True, exist_ok=True)
+        self.approved.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
     def _ids(folder: Path) -> list[int]:
@@ -84,6 +86,27 @@ class Outbox:
         number = self._number(draft_id)
         self.read_draft(number)  # raises LookupError if there is no such draft
         (self.drafts / f"{number:03}.md").replace(self.sent / f"{number:03}.md")
+
+    def approved_ids(self) -> list[int]:
+        return self._ids(self.approved)
+
+    def approve(self, draft_id: int | str) -> None:
+        """Keep a copy of the draft's exact text: the instructor approved these words."""
+        number = self._number(draft_id)
+        text = self.read_draft(number)  # raises LookupError if there is no such draft
+        (self.approved / f"{number:03}.md").write_text(text, encoding="utf-8")
+
+    def is_approved(self, draft_id: int | str) -> bool:
+        """True only if the draft still says exactly what the instructor approved."""
+        try:
+            number = self._number(draft_id)
+        except LookupError:
+            return False
+        draft = self.drafts / f"{number:03}.md"
+        copy = self.approved / f"{number:03}.md"
+        if not (draft.is_file() and copy.is_file()):
+            return False
+        return draft.read_text(encoding="utf-8") == copy.read_text(encoding="utf-8")
 
     def texts(self) -> list[str]:
         """Every draft, then every sent message."""

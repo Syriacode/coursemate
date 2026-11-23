@@ -7,6 +7,7 @@ import psycopg
 import pytest
 from psycopg import sql
 
+from coursemate.agent_tools import Outbox
 from coursemate.cli import main
 from coursemate.embeddings import FakeEmbedder
 from coursemate.llm import FakeClient, ToolCall
@@ -207,3 +208,35 @@ def test_agent_shows_the_draft_and_a_no_sends_nothing(cli_table, tmp_path, monke
     assert asked == ["Send it? [y/N] "]
     assert "(stopped: answer, 3 steps, 300 input tokens)" in err
     assert "(outbox: drafts [1], sent [])" in err
+
+
+def test_approve_asks_and_only_y_approves(tmp_path, monkeypatch):
+    outbox = Outbox(tmp_path / "outbox")
+    outbox.save_draft("Lab 4", "Lab 4 is due Friday of week 5.")
+    answers = iter(["", "y"])
+    asked = []
+    monkeypatch.setattr("builtins.input", lambda prompt="": asked.append(prompt) or next(answers))
+
+    code, out, _ = run("approve", "1", "--outbox", str(tmp_path / "outbox"))
+
+    assert code == 1
+    assert "# Lab 4" in out
+    assert outbox.approved_ids() == []
+
+    code, _, _ = run("approve", "1", "--outbox", str(tmp_path / "outbox"))
+
+    assert code == 0
+    assert outbox.approved_ids() == [1]
+    assert asked == ["Approve draft 1 for sending, exactly as shown? [y/N] "] * 2
+
+
+def test_approve_an_unknown_draft_says_so(tmp_path, monkeypatch):
+    def no_input(prompt=""):
+        raise AssertionError("there is nothing to approve, so nothing should be asked")
+
+    monkeypatch.setattr("builtins.input", no_input)
+
+    code, _, err = run("approve", "7", "--outbox", str(tmp_path / "outbox"))
+
+    assert code == 1
+    assert "no draft 7; drafts: none" in err
