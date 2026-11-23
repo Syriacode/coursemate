@@ -52,3 +52,6 @@ jobs:
         run: |
           python -m coursemate --provider fake ingest notes/sample --reset
           python -m coursemate --provider fake ask "What is the late work policy?" --min-score 0.1
+
+      - name: Smoke test the agent eval (fake model)
+        run: python -m coursemate --provider fake eval-agent notes/sample evals/agent_cases.jsonl --min-score 0.1

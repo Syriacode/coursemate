@@ -8,6 +8,8 @@ import pytest
 from psycopg import sql
 
 from coursemate.cli import main
+from coursemate.embeddings import FakeEmbedder
+from coursemate.llm import FakeClient, ToolCall
 from tests.conftest import TEST_DB, require_db
 
 SAMPLE = Path(__file__).parents[1] / "notes" / "sample"
@@ -171,3 +173,37 @@ def test_eval_retrieval_can_save_the_run(tmp_path):
     run_data = json.loads(saved.read_text(encoding="utf-8"))
     assert run_data["model"] == "fake"
     assert list(run_data["modes"]) == ["vector", "keyword", "hybrid"]
+
+
+@pytest.mark.db
+def test_agent_shows_the_draft_and_a_no_sends_nothing(cli_table, tmp_path, monkeypatch):
+    code, _, _ = run(*fake_args(cli_table), "ingest", str(SAMPLE), "--reset")
+    assert code == 0
+    scripted = FakeClient(
+        [
+            [ToolCall("draft_announcement", {"title": "Lab 4", "body": "Lab 4 is due Friday."})],
+            [ToolCall("send_announcement", {"draft_id": 1})],
+            "I drafted the Lab 4 reminder but it was not sent.",
+        ]
+    )
+    monkeypatch.setattr("coursemate.cli.make_models", lambda args: (FakeEmbedder(), scripted))
+    asked = []
+    monkeypatch.setattr("builtins.input", lambda prompt="": asked.append(prompt) or "n")
+
+    code, out, err = run(
+        *fake_args(cli_table),
+        "agent",
+        "Write an announcement reminding students when Lab 4 is due, and send it.",
+        "--outbox",
+        str(tmp_path / "outbox"),
+    )
+
+    assert code == 0, err
+    assert "The agent wants to SEND this announcement:" in out
+    assert "# Lab 4" in out
+    assert "Lab 4 is due Friday." in out
+    assert "error: not approved" in out
+    assert "I drafted the Lab 4 reminder but it was not sent." in out
+    assert asked == ["Send it? [y/N] "]
+    assert "(stopped: answer, 3 steps, 300 input tokens)" in err
+    assert "(outbox: drafts [1], sent [])" in err

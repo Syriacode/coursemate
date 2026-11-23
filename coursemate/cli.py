@@ -7,11 +7,15 @@ from typing import TextIO
 
 import uvicorn
 
+from coursemate.agent import Approver, run_agent
+from coursemate.agent_eval import AgentCaseError, evaluate_agent, format_report, load_cases
+from coursemate.agent_eval import save_run as save_agent_run
+from coursemate.agent_tools import CourseTools, Outbox
 from coursemate.api import create_app
 from coursemate.compare import average_tokens, compare, format_costs, format_runs
 from coursemate.embeddings import Embedder, FakeEmbedder, OllamaEmbedder
 from coursemate.ingest import ingest
-from coursemate.llm import FakeClient, LLMClient, LLMError, OllamaClient
+from coursemate.llm import FakeClient, LLMClient, LLMError, OllamaClient, ToolCall
 from coursemate.rag import DEFAULT_MIN_SCORE, answer
 from coursemate.retrieval import MODES, retrieve
 from coursemate.retrieval_eval import (
@@ -92,6 +96,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     compare_parser.add_argument("-n", type=int, default=3, help="how many golden questions")
     compare_parser.add_argument("--golden", type=Path, default=Path("evals/retrieval_golden.jsonl"))
+    agent_parser = subcommands.add_parser("agent")
+    agent_parser.add_argument("task")
+    agent_parser.add_argument("--outbox", type=Path, default=Path("outbox"))
+    agent_parser.add_argument("--max-steps", type=int, default=6)
+    agent_parser.add_argument("--min-score", type=float, default=DEFAULT_MIN_SCORE)
+    eval_agent_parser = subcommands.add_parser("eval-agent")
+    eval_agent_parser.add_argument("notes", type=Path)
+    eval_agent_parser.add_argument("cases", type=Path)
+    eval_agent_parser.add_argument("--save", type=Path, metavar="PATH")
+    eval_agent_parser.add_argument("--min-score", type=float, default=DEFAULT_MIN_SCORE)
     return parser
 
 
@@ -152,6 +166,89 @@ def run_compare(
     return 0
 
 
+def ask_instructor(outbox: Outbox, stdout: TextIO) -> Approver:
+    """An approver that shows the exact draft and asks the person at the keyboard.
+
+    A closure: the returned function remembers `outbox` and `stdout` from here.
+    Anything but "y" is a no.
+    """
+
+    def approve(call: ToolCall) -> bool:
+        try:
+            draft = outbox.read_draft(call.arguments.get("draft_id", ""))
+        except LookupError:
+            return True  # nothing to show; let the tool report its own "no draft" error
+        print("\nThe agent wants to SEND this announcement:\n", file=stdout)
+        print(draft, file=stdout)
+        return input("Send it? [y/N] ").strip().lower() == "y"
+
+    return approve
+
+
+def run_agent_command(
+    args: argparse.Namespace,
+    embedder: Embedder,
+    client: LLMClient,
+    stdout: TextIO,
+    stderr: TextIO,
+) -> int:
+    """Run the agent on one task, printing every step. A human approves each send."""
+    try:
+        store = PgVectorStore(args.db_url, table=args.table)
+        try:
+            store.prepare(embedder.model, embedder.dim)
+            outbox = Outbox(args.outbox)
+            tools = CourseTools(embedder, store, client, outbox, min_score=args.min_score)
+            # run_agent prints its steps with print(); redirect so they land in `stdout`.
+            with contextlib.redirect_stdout(stdout):
+                result = run_agent(
+                    client,
+                    args.task,
+                    tools.registry(),
+                    approve=ask_instructor(outbox, stdout),
+                    max_steps=args.max_steps,
+                    verbose=True,
+                )
+        finally:
+            store.close()
+    except (StoreError, LLMError) as err:
+        print(f"error: {err}", file=stderr)
+        return 1
+
+    print(f"\n{result.answer}", file=stdout)
+    print(
+        f"\n(stopped: {result.stopped}, {result.steps} steps, {result.input_tokens} input tokens)",
+        file=stderr,
+    )
+    print(f"(outbox: drafts {outbox.draft_ids()}, sent {outbox.sent_ids()})", file=stderr)
+    return 0
+
+
+def run_eval_agent(
+    args: argparse.Namespace,
+    embedder: Embedder,
+    client: LLMClient,
+    stdout: TextIO,
+    stderr: TextIO,
+) -> int:
+    """Run every agent case in its own outbox against an in-memory index (no database)."""
+    try:
+        cases = load_cases(args.cases)
+        store = build_index(args.notes, embedder)
+        results = evaluate_agent(cases, client, embedder, store, min_score=args.min_score)
+        if args.save:
+            save_agent_run(args.save, results, client.model)
+    except (AgentCaseError, LLMError, OSError) as err:
+        print(f"error: {err}", file=stderr)
+        return 1
+
+    print(f"chat model: {client.model}", file=stdout)
+    print(format_report(results), file=stdout)
+    if args.save:
+        print(f"saved run to {args.save}", file=stdout)
+    return 0
+
+
 def run_serve(args: argparse.Namespace, embedder: Embedder, stderr: TextIO) -> int:
     """Start the web API. It blocks until the server is stopped (Ctrl+C)."""
     try:
@@ -192,6 +289,10 @@ def main(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
         return run_compare(args, embedder, stdout, stderr)
     if args.command == "serve":
         return run_serve(args, embedder, stderr)
+    if args.command == "agent":
+        return run_agent_command(args, embedder, client, stdout, stderr)
+    if args.command == "eval-agent":
+        return run_eval_agent(args, embedder, client, stdout, stderr)
 
     try:
         store = PgVectorStore(args.db_url, table=args.table)

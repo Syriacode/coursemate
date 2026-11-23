@@ -25,10 +25,13 @@ py -m ruff format --check .
 - Async tests use `@pytest.mark.anyio`.
 - Never read, print or commit anything in `notes/private/`.
 - Run `py -m ruff format .` after editing Python files.
+- The agent may never send anything without a human's yes: send_announcement goes through the approval gate in run_tool, and tests never remove it.
 
 ## Plan
 
-- `GUIDE.md` holds the step-by-step plan once it's added.
+- `GUIDE-retrieval.md` (Nov 12): better retrieval.
+- `GUIDE-api.md` (Nov 16): API and streaming.
+- `GUIDE-agent.md` (Nov 20): the CourseMate agent: tools, human approval, agent evals, Claude Agent SDK.
 
 ## Environment
 
