@@ -37,7 +37,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,notebook]"
 
       - name: Lint
         run: ruff check .
@@ -52,6 +52,31 @@ jobs:
         run: |
           python -m coursemate --provider fake ingest notes/sample --reset
           python -m coursemate --provider fake ask "What is the late work policy?" --min-score 0.1
+
+      - name: Smoke test the web API (fake provider)
+        # uses the index that the CLI smoke test above just built
+        run: |
+          python -m coursemate --provider fake serve --min-score 0.1 > server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            curl -sf localhost:8000/api/health > /dev/null && break
+            if [ "$i" -eq 30 ]; then echo "server did not start"; cat server.log; exit 1; fi
+            sleep 1
+          done
+          curl -sN -X POST localhost:8000/api/chat \
+            -H "Content-Type: application/json" \
+            -d '{"question": "What is the late work policy?"}' | tee chat.out
+          grep -q "^event: done" chat.out || { cat server.log; exit 1; }
+
+      - name: Retrieval eval runs (fake embedder, plumbing only)
+        run: python -m coursemate --provider fake eval-retrieval notes/sample evals/retrieval_golden.jsonl
+
+      - name: Notebook runs top to bottom (fake embedder)
+        env:
+          COURSEMATE_PROVIDER: fake
+          MPLBACKEND: Agg
+        run: python -m jupyter nbconvert --to notebook --execute notebooks/retrieval.ipynb --output-dir /tmp
 
       - name: Smoke test the agent eval (fake model)
         run: python -m coursemate --provider fake eval-agent notes/sample evals/agent_cases.jsonl --min-score 0.1
