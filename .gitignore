@@ -7,4 +7,3 @@ logs/
 .env
 notes/private/
 outbox/
-.ipynb_checkpoints/
