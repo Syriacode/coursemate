@@ -169,6 +169,57 @@ Same task, answering **n** to the send:
 | answer admitted it was not sent? | TODO | TODO |
 | lines of agent code I wrote | `agent.py`: about 115 | `sdk_agent.py`: about 165, no loop |
 
+## MCP server
+
+`coursemate/mcp_server.py` serves the same four tools over MCP (Model Context Protocol) on stdio, so any MCP client can use them. Claude Code is the one I connect. It is a second front door to the same `CourseTools`, and the send is still behind a human's yes.
+
+### What it offers
+
+| Tool | Kind | Annotations (hints for the client) |
+|---|---|---|
+| `search_notes` | read | `readOnlyHint: true`, `openWorldHint: false` |
+| `make_quiz` | read | `readOnlyHint: true`, `openWorldHint: false` |
+| `draft_announcement` | draft | `readOnlyHint: false`, `destructiveHint: false` |
+| `send_announcement` | send | `readOnlyHint: false`, `destructiveHint: true`, `openWorldHint: true` |
+
+The annotations only tell the client what to expect. Nothing enforces them, so the real gate for a send is the approval flow below.
+
+- **Resources:** every `notes/sample/*.md` file, as `notes://sample/<file>.md`. In Claude Code you attach one with `@`.
+- **Prompt:** `announcement(topic)`. In Claude Code it is the command `/mcp__coursemate__announcement <topic>`. It tells the model to search the notes, draft an announcement with the source file for each fact, and not send it.
+
+### Run it
+
+```bash
+py -m coursemate.mcp_server          # the real server: Postgres, Ollama and the ingested index
+py -m coursemate.mcp_server --fake   # no database and no model (FakeEmbedder, FakeClient)
+py -m coursemate.mcp_raw             # starts the --fake server and talks to it in raw JSON-RPC
+```
+
+The server waits silently on stdin, because a client is supposed to start it. Other options: `--outbox`, `--notes` and `--min-score`. `mcp_raw` prints every message it sends and receives, and CI runs it as a smoke test.
+
+### Connect it to Claude Code
+
+From the repo folder, in Git Bash:
+
+```bash
+claude mcp add coursemate -- "$(cygpath -m "$PWD")/.venv/Scripts/python.exe" -m coursemate.mcp_server
+claude mcp list
+```
+
+Claude Code starts the server without activating the venv, so the command uses the venv's own `python.exe` by full path. `cygpath -m` turns the Git Bash path into a Windows one. The scope is local (only me, only this project), so the path stays out of the repo. Inside Claude Code, `/mcp` shows the status, tools, resources and prompt.
+
+The permission rules are in `.claude/settings.json`:
+
+- **allow:** `search_notes`, `make_quiz`, `draft_announcement`.
+- **ask:** `send_announcement`, so Claude Code asks me before every send.
+- **deny:** `py -m coursemate approve` and `python -m coursemate approve` through Bash, and `Edit` and `Write` on `outbox/**`, so Claude can't approve a draft for me.
+
+### The approval flow
+
+1. The model calls `draft_announcement`. It writes `outbox/drafts/NNN.md` and returns the draft id. Nothing is sent.
+2. I read the draft and run `py -m coursemate approve N` in my own terminal. This copies the exact text to `outbox/approved/NNN.md`.
+3. `send_announcement` sends draft N only if it still matches the approved copy word for word. Otherwise it returns an error and nothing is sent.
+
 ## Design decisions
 
 - **RAG with two "I don't know" gates.** Before the model call, a retrieval threshold (`min_score`) refuses questions whose best chunk scores too low. After it, the reply must match a JSON schema and cite only sources that were actually retrieved. Anything unexpected fails closed to "I don't know".
@@ -227,6 +278,12 @@ Same task, answering **n** to the send:
 - **`make_quiz` is a fixed RAG + schema workflow inside a tool,** not another agent: retrieve, ask for JSON that matches the quiz schema, validate it.
 - **Agent evals check outcome, trajectory, answer and stop,** plus a safety invariant: unapproved sends must be 0 on every run, whatever the pass rate.
 - **The SDK version reuses the same JSON schemas and starts locked down:** `tools=[]` (no Bash, Read, Edit), `setting_sources=[]` (no settings or `CLAUDE.md` leaking in), and only the read tools on the allow-list, so a send reaches my `can_use_tool`.
+- **One set of tools behind two interfaces.** `CourseTools` serves both the agent loop and the MCP server, and the MCP tools reuse the descriptions from `TOOL_SCHEMAS`. So the two interfaces can't drift apart, and one set of tests covers the core.
+- **The MCP server doesn't trust the client.** A server can't see who clicked yes in the client, and the model might be talking to a client that never asks. So the yes lives outside the client (`approve`, in my terminal), and it covers the exact text: if the draft changes after approval, the send is refused. The Claude Code `ask` rule is a second gate, not the only one.
+- **Expected errors become `ToolError`; bugs stay hidden.** `tool_errors()` converts `LookupError`, `ValueError`, `LLMError` and `StoreError`, and the model reads their messages and can react. Anything else is a bug: the SDK tells the client only "Error executing tool <name>" and keeps the details on the server, so a traceback never reaches the model.
+- **Resources are an allow-list of files.** The `*.md` files are found once at startup, so `notes/private`, subfolders and `../` paths are not on the list. A test checks that a path outside it is refused.
+- **stdio, because the server is local and single-user.** There is no port to open and no login to get wrong.
+- **Nothing prints to stdout, because stdout is the protocol.** A stray `print` would corrupt the JSON-RPC stream, and the `mcp_raw` step in CI would catch it.
 
 ## Known limitations
 
@@ -251,10 +308,14 @@ Same task, answering **n** to the send:
 - The OpenAI- and Anthropic-compatible endpoints of Ollama use its default context size: `num_ctx` can't be set per request there (the native endpoint sets it to 8192), so a long prompt can be cut.
 - The chat page is plain JavaScript (no TypeScript) and has no automated browser test; I only tested it by hand in Chrome.
 - `ask` still has no conversation history; only the chat page and API do.
-- "Sent" only moves a file from `drafts/` to `sent/`; nothing is delivered.
+- "Sent" only moves a file from `drafts/` to `sent/`; nothing is delivered, in the agent or over MCP.
 - One approver, at the terminal: no asynchronous approval and no audit log of who approved what.
 - A 3B model on a CPU is slow and often stops early or returns nothing.
 - 8 agent cases, each run once, so one flaky case moves the pass rate by 12.5 points.
 - Answers are checked by matching words, not by a judge, so a correct answer in other words can fail (`not-in-notes`).
-- Tool results and drafts are not checked for prompt injection yet (planned for Nov 27).
+- Tool results and drafts are not checked for prompt injection yet, in the agent or over MCP (planned for Nov 27).
 - `coursemate agent` prints a `→` and fails on a Windows console that uses cp1252 unless `PYTHONUTF8=1` is set.
+- MCP approval is a local file: anyone, or any program, that can write to `outbox/approved/` can approve a draft. The deny rules only stop Claude Code, not other users or programs.
+- The MCP server has one user and no auth. An HTTP version would need OAuth and access per course.
+- The deny rules are a list of patterns, so another spelling of the same command (a different Python path, for example) is not on it.
+- `make_quiz` is slow over MCP on a CPU model, because it runs the local model inside the tool call.
