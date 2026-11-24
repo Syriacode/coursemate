@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
-from mcp import Client
+from mcp import Client, MCPError
 from mcp.server.mcpserver.exceptions import ToolError
 
 from coursemate.agent_tools import CourseTools, Outbox
@@ -122,3 +122,33 @@ async def test_send_after_approval_works_through_the_client(server, course):
     assert not result.is_error
     assert json.loads(result.content[0].text) == {"draft_id": 1, "status": "sent"}
     assert course.outbox.sent_ids() == [1]
+
+
+@pytest.mark.anyio
+async def test_resources_are_the_sample_notes(server):
+    async with Client(server) as client:
+        listed = await client.list_resources()
+        syllabus = await client.read_resource("notes://sample/syllabus.md")
+
+    uris = [str(resource.uri) for resource in listed.resources]
+    assert len(uris) == 8
+    assert "notes://sample/syllabus.md" in uris
+    assert not any("private" in uri for uri in uris)
+    assert "Late work" in syllabus.contents[0].text
+
+
+@pytest.mark.anyio
+async def test_a_path_outside_the_list_is_refused(server):
+    async with Client(server) as client:
+        with pytest.raises(MCPError):
+            await client.read_resource("notes://sample/../private/grades.md")
+
+
+@pytest.mark.anyio
+async def test_announcement_prompt_says_not_to_send(server):
+    async with Client(server) as client:
+        prompt = await client.get_prompt("announcement", {"topic": "Lab 4"})
+
+    text = prompt.messages[0].content.text
+    assert "Lab 4" in text
+    assert "Do not send" in text

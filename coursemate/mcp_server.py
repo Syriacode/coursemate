@@ -13,6 +13,7 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.resources import FileResource
 from mcp.types import ToolAnnotations
 
 from coursemate.agent_tools import TOOL_SCHEMAS, CourseTools, Outbox
@@ -36,6 +37,13 @@ SEND_DESCRIPTION = (
     "Send a saved draft to all students. This cannot be undone. The instructor approves "
     "drafts in their own terminal, never through this tool; a draft that is not approved "
     "is refused and nothing is sent."
+)
+
+ANNOUNCEMENT_PROMPT = (
+    "Use search_notes to find what the course notes say about {topic}. Then use "
+    "draft_announcement to write a short announcement for students. Use only facts from "
+    "those search results, and name the note file each fact comes from. Do not send it. "
+    "Show me the draft id and the full text, so I can read it and approve it."
 )
 
 # Reuse Friday's descriptions so the model reads the same text as in the agent.
@@ -66,7 +74,7 @@ def send_if_approved(outbox: Outbox, draft_id: int) -> dict[str, Any]:
 
 
 def build_server(tools: CourseTools, notes_dir: Path) -> MCPServer:
-    """Serve the tools. (notes_dir is for the resources, added later.)"""
+    """Serve the tools, the notes in notes_dir as resources, and the announcement prompt."""
     server = MCPServer("coursemate")
 
     @server.tool(description=DESCRIPTIONS["search_notes"], annotations=READ)
@@ -88,6 +96,21 @@ def build_server(tools: CourseTools, notes_dir: Path) -> MCPServer:
     def send_announcement(draft_id: int) -> dict[str, Any]:
         with tool_errors():
             return send_if_approved(tools.outbox, draft_id)
+
+    # An allow-list: only the files found now (not subfolders) can ever be read.
+    for path in sorted(notes_dir.glob("*.md")):
+        server.add_resource(
+            FileResource(
+                uri=f"notes://sample/{path.name}",
+                name=path.stem,
+                mime_type="text/markdown",
+                path=path.resolve(),
+            )
+        )
+
+    @server.prompt(description="Draft (never send) an announcement about a topic from the notes.")
+    def announcement(topic: str) -> str:
+        return ANNOUNCEMENT_PROMPT.format(topic=topic)
 
     return server
 
