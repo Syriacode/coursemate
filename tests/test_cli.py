@@ -88,10 +88,12 @@ def test_stats_over_budget_exits_1(tmp_path):
     code, _, err = bench(log)
     assert code == 0, err
 
-    code, out, _ = run("stats", str(log), "--max-p95-ms", "0")
+    # a cost budget, not a latency one: Windows clocks can record every fake answer as 0 ms.
+    # The fake model costs $0, which is always over a budget of -1.
+    code, out, _ = run("stats", str(log), "--max-cost-usd", "-1")
 
     assert code == 1
-    assert "OVER" in out
+    assert "cost per answer $0.000000 > $-1.000000  OVER" in out
 
 
 def test_stats_on_a_missing_log_is_a_clear_error(tmp_path):
