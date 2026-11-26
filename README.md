@@ -220,6 +220,108 @@ The permission rules are in `.claude/settings.json`:
 2. I read the draft and run `py -m coursemate approve N` in my own terminal. This copies the exact text to `outbox/approved/NNN.md`.
 3. `send_announcement` sends draft N only if it still matches the approved copy word for word. Otherwise it returns an error and nothing is sent.
 
+## Observability
+
+Every answer and every agent run can be recorded as a trace: one timed span per step, sent to a local [Langfuse](https://langfuse.com) and to a JSONL file. A response cache skips the model for repeated questions, and `bench` and `stats` turn the traces into latency, cost and hit-rate numbers.
+
+### Start Langfuse
+
+Langfuse runs in Docker, in its own folder outside this repo. This is the short version of Step 1 in [GUIDE-observability.md](GUIDE-observability.md):
+
+```bash
+mkdir -p ~/langfuse-local
+cd ~/langfuse-local
+curl -fsSLO https://raw.githubusercontent.com/langfuse/langfuse/main/docker-compose.yml
+# now write ~/langfuse-local/.env with random secrets and your first user, project and keys:
+# copy the whole block from Step 1 of the guide
+docker compose up -d langfuse-web langfuse-worker
+docker compose logs -f langfuse-web                 # wait for "Ready", then Ctrl+C
+curl -s http://localhost:3000/api/public/health     # "status":"OK"
+```
+
+Sign in at http://localhost:3000 with the user from that `.env`. Run `docker compose down` in `~/langfuse-local` when you finish; the traces stay in Docker volumes.
+
+### Settings
+
+CourseMate reads these environment variables (see `.env.example`):
+
+| Variable | Value |
+|---|---|
+| `LANGFUSE_BASE_URL` | `http://localhost:3000` |
+| `LANGFUSE_PUBLIC_KEY` | `pk-lf-coursemate-local` |
+| `LANGFUSE_SECRET_KEY` | the project's secret key from Langfuse's `.env` |
+| `COURSEMATE_SPAN_LOG` | `logs/spans.jsonl` |
+
+Back in the `coursemate` folder, create `.env` (git-ignored) from the template and load it into the shell:
+
+```bash
+SK=$(grep '^LANGFUSE_INIT_PROJECT_SECRET_KEY=' ~/langfuse-local/.env | cut -d= -f2)
+sed "s/^LANGFUSE_SECRET_KEY=.*/LANGFUSE_SECRET_KEY=$SK/" .env.example > .env
+set -a; source .env; set +a
+```
+
+The `sed` command **overwrites** an existing `.env`. If yours already holds settings such as hosted API keys, add the four lines to it by hand instead.
+
+`serve`, `agent` and `bench` turn tracing on, and first print where the spans go (or `tracing: off`). Spans go to Langfuse only when all three `LANGFUSE_*` variables are set, and to a file when `--span-log PATH` or `COURSEMATE_SPAN_LOG` names one. The flag goes before the command: `py -m coursemate --span-log logs/x.jsonl serve`.
+
+### What a trace contains
+
+One answer is a `chat` span with the children `retrieve`, `llm` and `check`. A question refused before the model has only `chat` and `retrieve`. One agent run is an `agent` span with an `llm` child for each model call and a child named after each tool it calls. A step that raises an error ends with status ERROR.
+
+| Span | Attributes |
+|---|---|
+| `chat` (root) | `langfuse.trace.name` = chat, `langfuse.session.id` (from the API and `bench`), `langfuse.observation.input` (question), `langfuse.observation.output` (answer), `coursemate.found`, `coursemate.cached`, `coursemate.input_tokens`, `coursemate.output_tokens`, `coursemate.first_token_ms`, `coursemate.cost_usd` (left out when the price is unknown) |
+| `retrieve` | `langfuse.observation.type` = retriever, input = the search query, output = the hits (source, heading, score), `coursemate.k`, `coursemate.mode`, `coursemate.best_score` |
+| `llm` (in an answer) | type = generation, input = the messages, output = the reply text, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `langfuse.observation.usage_details`, `langfuse.observation.cost_details` (when the price is known), `langfuse.observation.completion_start_time` (when the first word came), `coursemate.cached` |
+| `check` | type = guardrail, output = "passed" or the reason it failed, `langfuse.observation.level` = WARNING when it failed |
+| `agent` (root) | `langfuse.trace.name` = agent, type = agent, input = the task, output = the answer, `coursemate.stopped`, `coursemate.steps`, `coursemate.tool_calls` |
+| `llm` (in an agent run) | type = generation, input = the messages so far, output = the assistant message, `gen_ai.request.model`, the token counts and `usage_details`, `coursemate.step` (no cost is recorded) |
+| a tool, e.g. `send_announcement` | type = tool, input = the arguments, output = the result, `coursemate.needs_approval`, `coursemate.denied`, level WARNING when the result is an error |
+
+### The response cache
+
+`serve` keeps finished replies in memory and answers an identical request from there: no model call and 0 tokens. The page's timing line then ends with `cached (no model call)`. A reply is reused for 3600 seconds by default, and at most 1000 are kept (the one used longest ago is dropped first).
+
+```bash
+py -m coursemate serve --cache-ttl 600   # reuse a reply for 10 minutes
+py -m coursemate serve --cache-ttl 0     # no cache
+```
+
+- **The key** is a sha256 of what the model call receives: provider, model, messages (system prompt, history, retrieved chunks and question), temperature and `max_tokens`.
+- **Exact, not semantic.** Only an identical request hits; one extra space is a miss. "When is Lab 4 due?" and "When is Lab 5 due?" are nearly the same to an embedding but have different answers.
+- **Temperature 0 only.** Above 0 a reply is meant to vary, so it is never stored.
+- Retrieval still runs on a hit, because the chunks are part of the key.
+- Only a stream that finished is stored. A finished reply that then fails the citation check is stored too, and is refused again each time.
+
+### Measure it: `bench` and `stats`
+
+`bench` asks the first `-n` golden questions `--repeat` times through the real chat code, with the cache on, against an in-memory index (no database). It prints one line per answer. `--cache-ttl 0` measures without the cache.
+
+```bash
+py -m coursemate --span-log logs/bench.jsonl bench notes/sample -n 5 --repeat 2
+py -m coursemate stats logs/bench.jsonl --max-p95-ms 15000 --max-cost-usd 0.001 --html logs/dashboard.html
+```
+
+`stats` reads a span log and reports the hit rate, p50, p95 and max latency (all, not cached, cached, first token), tokens per model call, and what those answers would cost on each hosted model. `--max-p95-ms` and `--max-cost-usd` (per answer) are budgets: each prints `OK` or `OVER`, and any `OVER` exits with code 1. `--html` also writes a one-page dashboard with one bar per answer. The log is appended to, so use a new file for each run you want to report on. CI runs both commands with the fake model.
+
+### My results
+
+From `evals/runs/observability-qwen2.5-3b.txt`: `qwen2.5:3b`, 5 golden questions asked twice (10 answers).
+
+| Measure | Result |
+|---|---|
+| Found / cache hit rate | 8 of 10 / 50% |
+| Not cached, p50 / p95 | 11,203 ms / 12,996 ms |
+| First token (from the start of the model call), p50 / p95 | 6,849 ms / 10,096 ms |
+| Cached, p50 / max | 76 ms / 2,105 ms |
+| All answers, p50 / p95 | 2,105 ms / 12,996 ms |
+| Tokens per model call | 479 in, 31 out |
+| Cost, local | $0 |
+| Cost per answer if hosted, Claude Haiku / Sonnet | $0.000032 / $0.000634 (estimates, prices checked 2026-11-15) |
+| Budgets: p95 ≤ 15,000 ms, cost ≤ $0.001 per answer | both OK |
+
+**What I'd improve first:** TODO
+
 ## Design decisions
 
 - **RAG with two "I don't know" gates.** Before the model call, a retrieval threshold (`min_score`) refuses questions whose best chunk scores too low. After it, the reply must match a JSON schema and cite only sources that were actually retrieved. Anything unexpected fails closed to "I don't know".
@@ -284,6 +386,14 @@ The permission rules are in `.claude/settings.json`:
 - **Resources are an allow-list of files.** The `*.md` files are found once at startup, so `notes/private`, subfolders and `../` paths are not on the list. A test checks that a path outside it is refused.
 - **stdio, because the server is local and single-user.** There is no port to open and no login to get wrong.
 - **Nothing prints to stdout, because stdout is the protocol.** A stray `print` would corrupt the JSON-RPC stream, and the `mcp_raw` step in CI would catch it.
+- **Plain OpenTelemetry instead of the Langfuse SDK.** The spans are vendor-neutral, so another backend only needs another exporter, and writing them by hand shows what the SDKs hide.
+- **Our own tracer provider instead of the global one.** The global one can be set only once per process; ours can be swapped, so each test collects its own spans.
+- **Explicit parents instead of the "current span".** An async generator pauses at every `yield`, so each span is given its parent, which is safe there.
+- **`aclosing`, so a closed stream ends its spans.** When the browser leaves mid-answer, the API closes the answer generator at once, and every span that started is ended and exported.
+- **Tracing off is a no-op.** The code has no `if tracing:` branches, and tests and CI never need Langfuse.
+- **A batch exporter,** so answers never wait for the network.
+- **The cache is keyed on exactly what the model receives,** so new notes or a new prompt change the key and can't return a stale answer.
+- **A JSONL span log,** so the report and the budgets run anywhere, including CI.
 
 ## Known limitations
 
@@ -319,3 +429,9 @@ The permission rules are in `.claude/settings.json`:
 - The MCP server has one user and no auth. An HTTP version would need OAuth and access per course.
 - The deny rules are a list of patterns, so another spelling of the same command (a different Python path, for example) is not on it.
 - `make_quiz` is slow over MCP on a CPU model, because it runs the local model inside the tool call.
+- The cache is in memory, one per process: it is lost on restart and not shared between servers (production would use Redis).
+- Prompts in traces are not redacted: fine for my notes, not for student data.
+- No sampling: every request is traced.
+- Langfuse runs locally, without backups.
+- The report's p95 of 10 answers is just the slowest answer.
+- Budgets are checked after the fact, not enforced per request.
