@@ -58,3 +58,8 @@ jobs:
 
       - name: Smoke test the MCP server (raw JSON-RPC over stdio, fake model)
         run: python -m coursemate.mcp_raw
+
+      - name: Smoke test the latency and cost budgets (fake model)
+        run: |
+          python -m coursemate --provider fake --span-log logs/fake.jsonl bench notes/sample -n 3 --repeat 2 --min-score 0.1
+          python -m coursemate stats logs/fake.jsonl --max-p95-ms 5000 --max-cost-usd 0

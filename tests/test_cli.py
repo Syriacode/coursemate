@@ -16,6 +16,7 @@ from coursemate.tracing import tracer
 from tests.conftest import TEST_DB, require_db
 
 SAMPLE = Path(__file__).parents[1] / "notes" / "sample"
+GOLDEN = Path(__file__).parents[1] / "evals" / "retrieval_golden.jsonl"
 
 
 def run(*args):
@@ -37,6 +38,67 @@ def cli_table():
 
 def fake_args(table):
     return ["--provider", "fake", "--db-url", TEST_DB, "--table", table]
+
+
+def bench(log, *flags):
+    return run(
+        "--provider", "fake", "--span-log", str(log),
+        "bench", str(SAMPLE), "--golden", str(GOLDEN),
+        "-n", "3", "--repeat", "2", "--min-score", "0.1", *flags,
+    )  # fmt: skip
+
+
+def bench_sources(out):
+    """The cached/model column of each answer line."""
+    return [line.split()[5] for line in out.splitlines() if line.startswith("round ")]
+
+
+def test_bench_then_stats_with_the_fake_model(tmp_path):
+    log = tmp_path / "spans.jsonl"
+
+    code, out, err = bench(log)
+
+    assert code == 0, err
+    assert f"tracing: span log {log}" in err
+    assert "3 questions x 2" in out
+    assert bench_sources(out) == ["model"] * 3 + ["cached"] * 3
+    assert "round 2  q01" in out
+    assert f"spans written to {log.as_posix()}" in out
+
+    page = tmp_path / "dashboard.html"
+    code, out, err = run(
+        "stats", str(log), "--max-p95-ms", "60000", "--max-cost-usd", "0", "--html", str(page)
+    )
+
+    assert code == 0, out + err
+    assert "answers: 6   found: 6   cached: 3 (50% hit rate)" in out
+    assert "OVER" not in out
+    assert page.exists()
+
+
+def test_bench_with_a_zero_ttl_never_hits(tmp_path):
+    code, out, err = bench(tmp_path / "spans.jsonl", "--cache-ttl", "0")
+
+    assert code == 0, err
+    assert bench_sources(out) == ["model"] * 6
+
+
+def test_stats_over_budget_exits_1(tmp_path):
+    log = tmp_path / "spans.jsonl"
+    code, _, err = bench(log)
+    assert code == 0, err
+
+    code, out, _ = run("stats", str(log), "--max-p95-ms", "0")
+
+    assert code == 1
+    assert "OVER" in out
+
+
+def test_stats_on_a_missing_log_is_a_clear_error(tmp_path):
+    code, _, err = run("stats", str(tmp_path / "no-such.jsonl"))
+
+    assert code == 1
+    assert "error:" in err
 
 
 def test_bad_usage_returns_2():

@@ -2,6 +2,9 @@ import argparse
 import asyncio
 import contextlib
 import os
+import time
+import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TextIO
 
@@ -13,6 +16,7 @@ from coursemate.agent_eval import save_run as save_agent_run
 from coursemate.agent_tools import CourseTools, Outbox
 from coursemate.api import create_app
 from coursemate.cache import CachedStreamer, ResponseCache
+from coursemate.chat import Final, stream_answer
 from coursemate.compare import average_tokens, compare, format_costs, format_runs
 from coursemate.embeddings import Embedder, FakeEmbedder, OllamaEmbedder
 from coursemate.ingest import ingest
@@ -20,6 +24,7 @@ from coursemate.llm import FakeClient, LLMClient, LLMError, OllamaClient, ToolCa
 from coursemate.rag import DEFAULT_MIN_SCORE, answer
 from coursemate.retrieval import MODES, retrieve
 from coursemate.retrieval_eval import (
+    GoldenQuestion,
     GoldenSetError,
     build_index,
     evaluate,
@@ -28,8 +33,9 @@ from coursemate.retrieval_eval import (
     misses,
     save_run,
 )
-from coursemate.store import PgVectorStore, StoreError
-from coursemate.streaming import make_streamer
+from coursemate.stats import format_stats, load_answers, summarize, write_html
+from coursemate.store import PgVectorStore, StoreError, VectorStore
+from coursemate.streaming import StreamingLLM, make_streamer
 from coursemate.tracing import setup_tracing, shutdown_tracing
 
 DEFAULT_DB = "postgresql://coursemate:coursemate@127.0.0.1:5433/coursemate"
@@ -118,6 +124,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     compare_parser.add_argument("-n", type=int, default=3, help="how many golden questions")
     compare_parser.add_argument("--golden", type=Path, default=Path("evals/retrieval_golden.jsonl"))
+    bench_parser = subcommands.add_parser("bench")
+    bench_parser.add_argument("notes", type=Path)
+    bench_parser.add_argument("--golden", type=Path, default=Path("evals/retrieval_golden.jsonl"))
+    bench_parser.add_argument("-n", type=int, default=5, help="how many golden questions")
+    bench_parser.add_argument("--repeat", type=int, default=2, help="how many rounds")
+    bench_parser.add_argument(
+        "--cache-ttl", type=float, default=3600, metavar="SECONDS", help="0 = no cache"
+    )
+    bench_parser.add_argument("--min-score", type=float, default=DEFAULT_MIN_SCORE)
+    stats_parser = subcommands.add_parser("stats")
+    stats_parser.add_argument("log", type=Path, help="a span log written with --span-log")
+    stats_parser.add_argument("--max-p95-ms", type=float, help="latency budget")
+    stats_parser.add_argument("--max-cost-usd", type=float, help="cost budget, per answer")
+    stats_parser.add_argument("--html", type=Path, metavar="PATH", help="also write a dashboard")
     agent_parser = subcommands.add_parser("agent")
     agent_parser.add_argument("task")
     agent_parser.add_argument("--outbox", type=Path, default=Path("outbox"))
@@ -189,6 +209,101 @@ def run_compare(
     else:
         print(format_costs(*tokens), file=stdout)
     return 0
+
+
+async def _bench(
+    questions: Sequence[GoldenQuestion],
+    embedder: Embedder,
+    store: VectorStore,
+    llm: StreamingLLM,
+    *,
+    rounds: int,
+    min_score: float,
+    session_id: str,
+    stdout: TextIO,
+) -> None:
+    """Ask every question once per round, one at a time, and print a line per answer."""
+    for number in range(1, rounds + 1):
+        for question in questions:
+            start = time.perf_counter()
+            async for event in stream_answer(
+                question.question,
+                [],
+                embedder,
+                store,
+                llm,
+                min_score=min_score,
+                session_id=session_id,
+            ):
+                if isinstance(event, Final):
+                    final = event
+            ms = (time.perf_counter() - start) * 1000
+            # a refusal before the model has no first token; "-" means no model and no cache
+            source = "cached" if final.cached else "model" if final.first_token_ms > 0 else "-"
+            outcome = "found" if final.found else "I don't know"
+            print(
+                f"round {number}  {question.id}  {ms:>9,.0f} ms  {source:<6}  {outcome}",
+                file=stdout,
+                flush=True,
+            )
+
+
+def run_bench(args: argparse.Namespace, embedder: Embedder, stdout: TextIO, stderr: TextIO) -> int:
+    """Ask golden questions several times, with tracing and the cache, in memory."""
+    if args.n < 1 or args.repeat < 1:
+        print("error: -n and --repeat must be at least 1", file=stderr)
+        return 1
+    start_tracing(args, stderr)
+    try:
+        llm = make_streamer(args.provider, args.chat_model, args.ollama_url)
+        if args.cache_ttl > 0:
+            llm = CachedStreamer(llm, ResponseCache(ttl_s=args.cache_ttl))
+        questions = load_golden(args.golden)[: args.n]
+        if not questions:
+            raise ValueError("there are no golden questions to ask")
+        store = build_index(args.notes, embedder)  # in memory: no Postgres needed
+        session_id = f"bench-{uuid.uuid4().hex[:8]}"
+        print(f"session {session_id}: {len(questions)} questions x {args.repeat}", file=stdout)
+        # one event loop for the whole run: the model's HTTP client belongs to one loop
+        asyncio.run(
+            _bench(
+                questions,
+                embedder,
+                store,
+                llm,
+                rounds=args.repeat,
+                min_score=args.min_score,
+                session_id=session_id,
+                stdout=stdout,
+            )
+        )
+    except (GoldenSetError, LLMError, StoreError, OSError, ValueError) as err:
+        print(f"error: {err}", file=stderr)
+        return 1
+    finally:
+        shutdown_tracing()  # send the last batch of spans before the program exits
+
+    if args.span_log:
+        print(f"spans written to {args.span_log.as_posix()}", file=stdout)
+    return 0
+
+
+def run_stats(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) -> int:
+    """Report on a span log. Returns 1 when a budget is over."""
+    try:
+        answers = load_answers(args.log)
+        summary = summarize(answers)
+        if args.html:
+            write_html(args.html, answers, summary)
+    except (OSError, ValueError) as err:
+        print(f"error: {err}", file=stderr)
+        return 1
+
+    text, ok = format_stats(summary, args.max_p95_ms, args.max_cost_usd)
+    print(text, file=stdout)
+    if args.html:
+        print(f"dashboard written to {args.html.as_posix()}", file=stderr)
+    return 0 if ok else 1
 
 
 def start_tracing(args: argparse.Namespace, stderr: TextIO) -> None:
@@ -349,12 +464,16 @@ def main(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
 
     if args.command == "approve":  # needs no model and no database
         return run_approve(args, stdout, stderr)
+    if args.command == "stats":  # only reads a file
+        return run_stats(args, stdout, stderr)
 
     embedder, client = make_models(args)
     if args.command == "eval-retrieval":
         return run_eval(args, embedder, stdout, stderr)
     if args.command == "compare":
         return run_compare(args, embedder, stdout, stderr)
+    if args.command == "bench":
+        return run_bench(args, embedder, stdout, stderr)
     if args.command == "serve":
         return run_serve(args, embedder, stderr)
     if args.command == "agent":
