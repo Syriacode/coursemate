@@ -10,7 +10,6 @@ from pydantic import BaseModel, StringConstraints
 from coursemate.chat import Final, Token, Turn, stream_answer
 from coursemate.embeddings import Embedder
 from coursemate.llm import LLMError
-from coursemate.pricing import cost_usd, price_for
 from coursemate.rag import DEFAULT_MIN_SCORE
 from coursemate.retrieval import Mode
 from coursemate.sessions import SessionStore, UnknownSession
@@ -77,16 +76,27 @@ def create_app(
         async def events() -> AsyncIterator[str]:
             yield format_sse("session", {"session_id": session_id})
             try:
-                async for event in stream_answer(
-                    question, history, embedder, store, llm, k=k, min_score=min_score, mode=mode
-                ):
-                    if isinstance(event, Token):
-                        yield format_sse("token", {"text": event.text})
-                    elif isinstance(event, Final):
-                        # the session may have been dropped to make room while we streamed
-                        with contextlib.suppress(UnknownSession):
-                            sessions.add(session_id, Turn(question, event.answer))
-                        yield format_sse("done", done_payload(event, llm))
+                answer = stream_answer(
+                    question,
+                    history,
+                    embedder,
+                    store,
+                    llm,
+                    k=k,
+                    min_score=min_score,
+                    mode=mode,
+                    session_id=session_id,
+                )
+                # if the browser leaves, close the answer now, so its spans end
+                async with contextlib.aclosing(answer):
+                    async for event in answer:
+                        if isinstance(event, Token):
+                            yield format_sse("token", {"text": event.text})
+                        elif isinstance(event, Final):
+                            # the session may have been dropped to make room while we streamed
+                            with contextlib.suppress(UnknownSession):
+                                sessions.add(session_id, Turn(question, event.answer))
+                            yield format_sse("done", done_payload(event, llm))
             except (LLMError, StoreError) as exc:
                 # the response has already started, so the error travels as an event
                 yield format_sse("error", {"message": str(exc)})
@@ -99,8 +109,6 @@ def create_app(
 
 
 def done_payload(final: Final, llm: StreamingLLM) -> dict:
-    # None (cost unknown) when the model isn't in the price table; the page shows that as such
-    price = price_for(final.model, llm.local)
     return {
         "found": final.found,
         "answer": final.answer,
@@ -115,7 +123,7 @@ def done_payload(final: Final, llm: StreamingLLM) -> dict:
         "output_tokens": final.output_tokens,
         "first_token_ms": final.first_token_ms,
         "total_ms": final.total_ms,
-        "cost_usd": (
-            None if price is None else cost_usd(final.input_tokens, final.output_tokens, price)
-        ),
+        # None (cost unknown) when the model isn't in the price table; the page shows that as such
+        "cost_usd": final.cost_usd,
+        "cached": final.cached,
     }

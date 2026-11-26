@@ -8,8 +8,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from opentelemetry.trace import Span
+
 from coursemate.agent_tools import NEEDS_APPROVAL, TOOL_SCHEMAS  # noqa: F401
 from coursemate.llm import LLMClient, Message, ToolCall, assistant_message
+from coursemate.tracing import attrs, span
 
 # NEEDS_APPROVAL is not used yet. run_tool needs it (you type that body), so the noqa
 # keeps ruff from removing the import before you do.
@@ -87,7 +90,39 @@ def run_agent(
     max_steps: int = 6,
     verbose: bool = False,
 ) -> AgentResult:
-    """Ask the model, run the tools it asks for, send the results back, repeat until it answers."""
+    """Ask the model, run the tools it asks for, send the results back, repeat until it answers.
+
+    Each run is one trace: an "agent" span with a child for every model call and tool call.
+    """
+    with span(
+        "agent",
+        langfuse__trace__name="agent",
+        langfuse__observation__type="agent",
+        langfuse__observation__input=task,
+    ) as root:
+        result = _run_steps(root, client, task, tools, schemas, approve, max_steps, verbose)
+        root.set_attributes(
+            attrs(
+                langfuse__observation__output=result.answer,
+                coursemate__stopped=result.stopped,
+                coursemate__steps=result.steps,
+                coursemate__tool_calls=result.tool_calls,
+            )
+        )
+    return result
+
+
+def _run_steps(
+    root: Span,
+    client: LLMClient,
+    task: str,
+    tools: dict[str, Callable[..., Any]],
+    schemas: list[dict[str, Any]],
+    approve: Approver,
+    max_steps: int,
+    verbose: bool,
+) -> AgentResult:
+    """The agent loop. Every span it opens is a child of `root`."""
     messages: list[Message] = [
         {"role": "system", "content": AGENT_SYSTEM},
         {"role": "user", "content": task},
@@ -95,7 +130,26 @@ def run_agent(
     input_tokens = 0
     tool_calls: list[str] = []
     for step in range(1, max_steps + 1):
-        response = client.chat(messages, tools=schemas)
+        with span(
+            "llm",
+            root,
+            langfuse__observation__type="generation",
+            langfuse__observation__input=messages,
+            gen_ai__request__model=client.model,
+            coursemate__step=step,
+        ) as llm_span:
+            response = client.chat(messages, tools=schemas)
+            llm_span.set_attributes(
+                attrs(
+                    langfuse__observation__output=assistant_message(response),
+                    gen_ai__usage__input_tokens=response.input_tokens,
+                    gen_ai__usage__output_tokens=response.output_tokens,
+                    langfuse__observation__usage_details={
+                        "input": response.input_tokens,
+                        "output": response.output_tokens,
+                    },
+                )
+            )
         input_tokens += response.input_tokens
         messages.append(assistant_message(response))
         if verbose:
@@ -111,9 +165,25 @@ def run_agent(
 
         for call in response.tool_calls:
             tool_calls.append(call.name)
-            messages.append(
-                {"role": "tool", "tool_name": call.name, "content": run_tool(call, tools, approve)}
-            )
+            with span(
+                call.name,
+                root,
+                langfuse__observation__type="tool",
+                langfuse__observation__input=call.arguments,
+                coursemate__needs_approval=call.name in NEEDS_APPROVAL,
+            ) as tool_span:
+                content = run_tool(call, tools, approve)
+                # tracing only reads the result: the approval decision stays in run_tool
+                tool_span.set_attributes(
+                    attrs(
+                        langfuse__observation__output=content,
+                        coursemate__denied=content.startswith("error: not approved"),
+                        langfuse__observation__level=(
+                            "WARNING" if content.startswith("error") else None
+                        ),
+                    )
+                )
+            messages.append({"role": "tool", "tool_name": call.name, "content": content})
             if verbose:
                 show_message(messages[-1])
 

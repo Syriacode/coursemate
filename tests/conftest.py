@@ -1,7 +1,13 @@
 import os
+from collections.abc import Iterator
 
 import psycopg
 import pytest
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+from coursemate.tracing import use_provider
 
 TEST_DB = os.environ.get(
     "DATABASE_URL", "postgresql://coursemate:coursemate@127.0.0.1:5433/coursemate"
@@ -11,6 +17,31 @@ TEST_DB = os.environ.get(
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def no_tracing_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hide a loaded .env from every test, so no test sends spans to Langfuse or a log."""
+    for name in (
+        "LANGFUSE_BASE_URL",
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_SECRET_KEY",
+        "COURSEMATE_SPAN_LOG",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture
+def spans() -> Iterator[InMemorySpanExporter]:
+    """Collect finished spans in memory instead of sending them anywhere."""
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    # Exports each span the moment it ends, so a test never waits for a batch.
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    previous = use_provider(provider)
+    yield exporter
+    use_provider(previous)
+    provider.shutdown()
 
 
 def db_available() -> bool:

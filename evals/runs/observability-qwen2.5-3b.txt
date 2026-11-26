@@ -1,0 +1,19 @@
+answers: 10   found: 8   cached: 5 (50% hit rate)
+
+                 n    p50 ms    p95 ms    max ms
+all answers     10     2,105    12,996    12,996
+not cached       5    11,203    12,996    12,996
+cached           5        76     2,105     2,105
+first token      5     6,849    10,096    10,096
+
+tokens per model call: 479 in, 31 out
+if hosted (prices checked 2026-11-15; cached answers cost nothing):
+  claude-haiku-5-5    $0.000032 per answer   $0.03 per 1,000
+  claude-sonnet-5-5   $0.000634 per answer   $0.63 per 1,000
+  gpt-6-luna          $0.000032 per answer   $0.03 per 1,000
+  gpt-6.1-sol         $0.000634 per answer   $0.63 per 1,000
+cost of these answers: $0.000000
+
+budgets:
+  p95 latency 12,996 ms <= 15,000 ms  OK
+  cost per answer $0.000000 <= $0.001000  OK

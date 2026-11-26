@@ -33,6 +33,7 @@ class StreamEnd:
     output_tokens: int
     first_token_ms: float
     total_ms: float
+    cached: bool = False  # True when the reply came from our response cache
 
 
 class StreamingLLM(Protocol):

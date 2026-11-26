@@ -8,12 +8,15 @@ import pytest
 from psycopg import sql
 
 from coursemate.agent_tools import Outbox
-from coursemate.cli import main
+from coursemate.cache import CachedStreamer
+from coursemate.cli import build_parser, main
 from coursemate.embeddings import FakeEmbedder
 from coursemate.llm import FakeClient, ToolCall
+from coursemate.tracing import tracer
 from tests.conftest import TEST_DB, require_db
 
 SAMPLE = Path(__file__).parents[1] / "notes" / "sample"
+GOLDEN = Path(__file__).parents[1] / "evals" / "retrieval_golden.jsonl"
 
 
 def run(*args):
@@ -35,6 +38,69 @@ def cli_table():
 
 def fake_args(table):
     return ["--provider", "fake", "--db-url", TEST_DB, "--table", table]
+
+
+def bench(log, *flags):
+    return run(
+        "--provider", "fake", "--span-log", str(log),
+        "bench", str(SAMPLE), "--golden", str(GOLDEN),
+        "-n", "3", "--repeat", "2", "--min-score", "0.1", *flags,
+    )  # fmt: skip
+
+
+def bench_sources(out):
+    """The cached/model column of each answer line."""
+    return [line.split()[5] for line in out.splitlines() if line.startswith("round ")]
+
+
+def test_bench_then_stats_with_the_fake_model(tmp_path):
+    log = tmp_path / "spans.jsonl"
+
+    code, out, err = bench(log)
+
+    assert code == 0, err
+    assert f"tracing: span log {log}" in err
+    assert "3 questions x 2" in out
+    assert bench_sources(out) == ["model"] * 3 + ["cached"] * 3
+    assert "round 2  q01" in out
+    assert f"spans written to {log.as_posix()}" in out
+
+    page = tmp_path / "dashboard.html"
+    code, out, err = run(
+        "stats", str(log), "--max-p95-ms", "60000", "--max-cost-usd", "0", "--html", str(page)
+    )
+
+    assert code == 0, out + err
+    assert "answers: 6   found: 6   cached: 3 (50% hit rate)" in out
+    assert "OVER" not in out
+    assert page.exists()
+
+
+def test_bench_with_a_zero_ttl_never_hits(tmp_path):
+    code, out, err = bench(tmp_path / "spans.jsonl", "--cache-ttl", "0")
+
+    assert code == 0, err
+    assert bench_sources(out) == ["model"] * 6
+
+
+def test_stats_over_budget_exits_1(tmp_path):
+    log = tmp_path / "spans.jsonl"
+    code, _, err = bench(log)
+    assert code == 0, err
+
+    # a cost budget, not a latency one: Windows clocks can record every fake answer as 0 ms.
+    # The fake model costs $0, which is always over a budget of -1.
+    code, out, _ = run("stats", str(log), "--max-cost-usd", "-1")
+
+    assert code == 1
+    assert "cost per answer $0.000000 > $-1.000000  OVER" in out
+
+
+def test_stats_on_a_missing_log_is_a_clear_error(tmp_path):
+    code, _, err = run("stats", str(tmp_path / "no-such.jsonl"))
+
+    assert code == 1
+    assert "error:" in err
 
 
 def test_bad_usage_returns_2():
@@ -115,6 +181,72 @@ def test_serve_with_a_hosted_llm_and_no_key_is_a_clear_error(monkeypatch):
 
     assert code == 1
     assert "costs money" in err
+    assert "tracing: off" in err
+
+
+def test_serve_shuts_tracing_down_when_it_fails_early(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    log = tmp_path / "spans.jsonl"
+
+    code, _, err = run("--provider", "fake", "--span-log", str(log), "serve", "--llm", "openai")
+
+    assert code == 1
+    assert f"tracing: span log {log}" in err
+    assert not tracer().start_span("x").is_recording()
+
+
+def test_span_log_defaults_to_the_environment_variable(monkeypatch):
+    assert build_parser().parse_args(["serve"]).span_log is None
+
+    monkeypatch.setenv("COURSEMATE_SPAN_LOG", "logs/spans.jsonl")
+
+    assert build_parser().parse_args(["serve"]).span_log == Path("logs/spans.jsonl")
+    chosen = build_parser().parse_args(["--span-log", "other.jsonl", "serve"])
+    assert chosen.span_log == Path("other.jsonl")
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(("flags", "ttl"), [([], 3600), (["--cache-ttl", "0"], None)])
+def test_serve_caches_unless_the_ttl_is_zero(cli_table, monkeypatch, flags, ttl):
+    code, _, _ = run(*fake_args(cli_table), "ingest", str(SAMPLE), "--reset")
+    assert code == 0
+    models = []
+
+    def fake_create_app(embedder, store, llm, **kwargs):
+        models.append(llm)
+
+    monkeypatch.setattr("coursemate.cli.create_app", fake_create_app)
+    monkeypatch.setattr("uvicorn.run", lambda app, host, port: None)
+
+    code, _, err = run(*fake_args(cli_table), "serve", *flags)
+
+    assert code == 0, err
+    [llm] = models
+    if ttl is None:
+        assert not isinstance(llm, CachedStreamer)
+    else:
+        assert isinstance(llm, CachedStreamer) and llm.cache.ttl_s == ttl
+
+
+@pytest.mark.db
+def test_serve_traces_while_the_server_runs(cli_table, tmp_path, monkeypatch):
+    code, _, _ = run(*fake_args(cli_table), "ingest", str(SAMPLE), "--reset")
+    assert code == 0
+    log = tmp_path / "spans.jsonl"
+
+    def fake_run(app, host, port):
+        tracer().start_span("while-serving").end()
+
+    monkeypatch.setattr("uvicorn.run", fake_run)
+
+    code, _, err = run(*fake_args(cli_table), "--span-log", str(log), "serve")
+
+    assert code == 0, err
+    assert f"tracing: span log {log}" in err
+    # the span reached the file, so shutdown flushed the batch; and tracing is off again
+    assert json.loads(log.read_text(encoding="utf-8"))["name"] == "while-serving"
+    assert not tracer().start_span("x").is_recording()
 
 
 @pytest.mark.db
