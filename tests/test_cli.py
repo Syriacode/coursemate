@@ -8,6 +8,7 @@ import pytest
 from psycopg import sql
 
 from coursemate.agent_tools import Outbox
+from coursemate.cache import CachedStreamer
 from coursemate.cli import build_parser, main
 from coursemate.embeddings import FakeEmbedder
 from coursemate.llm import FakeClient, ToolCall
@@ -139,6 +140,29 @@ def test_span_log_defaults_to_the_environment_variable(monkeypatch):
     assert build_parser().parse_args(["serve"]).span_log == Path("logs/spans.jsonl")
     chosen = build_parser().parse_args(["--span-log", "other.jsonl", "serve"])
     assert chosen.span_log == Path("other.jsonl")
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(("flags", "ttl"), [([], 3600), (["--cache-ttl", "0"], None)])
+def test_serve_caches_unless_the_ttl_is_zero(cli_table, monkeypatch, flags, ttl):
+    code, _, _ = run(*fake_args(cli_table), "ingest", str(SAMPLE), "--reset")
+    assert code == 0
+    models = []
+
+    def fake_create_app(embedder, store, llm, **kwargs):
+        models.append(llm)
+
+    monkeypatch.setattr("coursemate.cli.create_app", fake_create_app)
+    monkeypatch.setattr("uvicorn.run", lambda app, host, port: None)
+
+    code, _, err = run(*fake_args(cli_table), "serve", *flags)
+
+    assert code == 0, err
+    [llm] = models
+    if ttl is None:
+        assert not isinstance(llm, CachedStreamer)
+    else:
+        assert isinstance(llm, CachedStreamer) and llm.cache.ttl_s == ttl
 
 
 @pytest.mark.db

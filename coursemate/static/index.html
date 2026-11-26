@@ -121,6 +121,7 @@
           else if (data.cost_usd === 0) meta += " · $0 (local)";
           else meta += " · $" + data.cost_usd.toPrecision(2);
         }
+        if (data.cached) meta += " · cached (no model call)";
         addLine(msg, "meta", meta);
       }
 

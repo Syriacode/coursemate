@@ -12,6 +12,7 @@ from coursemate.agent_eval import AgentCaseError, evaluate_agent, format_report,
 from coursemate.agent_eval import save_run as save_agent_run
 from coursemate.agent_tools import CourseTools, Outbox
 from coursemate.api import create_app
+from coursemate.cache import CachedStreamer, ResponseCache
 from coursemate.compare import average_tokens, compare, format_costs, format_runs
 from coursemate.embeddings import Embedder, FakeEmbedder, OllamaEmbedder
 from coursemate.ingest import ingest
@@ -99,6 +100,13 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("-k", type=int, default=4)
     serve_parser.add_argument("--mode", choices=MODES, default="vector")
     serve_parser.add_argument("--min-score", type=float, default=DEFAULT_MIN_SCORE)
+    serve_parser.add_argument(
+        "--cache-ttl",
+        type=float,
+        default=3600,
+        metavar="SECONDS",
+        help="how long a cached reply is reused (default: 3600; 0 = no cache)",
+    )
     compare_parser = subcommands.add_parser("compare")
     compare_parser.add_argument("notes", type=Path)
     compare_parser.add_argument(
@@ -312,6 +320,8 @@ def _serve(args: argparse.Namespace, embedder: Embedder, stderr: TextIO) -> int:
     except (ValueError, LLMError) as err:
         print(f"error: {err}", file=stderr)
         return 1
+    if args.cache_ttl > 0:
+        llm = CachedStreamer(llm, ResponseCache(ttl_s=args.cache_ttl))
 
     try:
         store = PgVectorStore(args.db_url, table=args.table)

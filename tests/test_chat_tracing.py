@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from opentelemetry.trace import StatusCode
 
 from coursemate.api import ChatRequest, create_app
+from coursemate.cache import CachedStreamer, ResponseCache
 from coursemate.chat import Final, Token, stream_answer
 from coursemate.embeddings import FakeEmbedder
 from coursemate.ingest import ingest
@@ -196,6 +197,21 @@ async def test_a_known_price_is_costed(index, spans, monkeypatch):
     assert final.cost_usd == expected
     llm = by_name(spans)["llm"].attributes
     assert json.loads(llm["langfuse.observation.cost_details"])["total"] == expected
+
+
+@pytest.mark.anyio
+async def test_the_same_question_twice_hits_the_cache(index, spans):
+    fake = FakeStreamer([GOOD])  # one reply: the second answer must not call the model
+    llm = CachedStreamer(fake, ResponseCache())
+
+    first = await final_of(answer(index, llm))
+    second = await final_of(answer(index, llm))
+
+    assert [first.cached, second.cached] == [False, True]
+    assert second.answer == first.answer and second.found
+    assert (second.input_tokens, second.output_tokens) == (0, 0)
+    roots = [s for s in spans.get_finished_spans() if s.name == "chat"]
+    assert [s.attributes["coursemate.cached"] for s in roots] == [False, True]
 
 
 def test_the_api_session_id_is_on_the_root_span(index, spans):
