@@ -26,12 +26,15 @@ py -m ruff format --check .
 - Never read, print or commit anything in `notes/private/`.
 - Run `py -m ruff format .` after editing Python files.
 - The agent may never send anything without a human's yes: send_announcement goes through the approval gate in run_tool, and tests never remove it.
+- Nothing in the MCP server may print to stdout: stdout is the protocol.
+- Over MCP, send_announcement sends only drafts the instructor approved with py -m coursemate approve; tests never remove that gate, and Claude never runs that command.
 
 ## Plan
 
 - `GUIDE-retrieval.md` (Nov 12): better retrieval.
 - `GUIDE-api.md` (Nov 16): API and streaming.
 - `GUIDE-agent.md` (Nov 20): the CourseMate agent: tools, human approval, agent evals, Claude Agent SDK.
+- `GUIDE-mcp.md` (Nov 22): the CourseMate MCP server.
 
 ## Environment
 

@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__coursemate__search_notes",
+      "mcp__coursemate__make_quiz",
+      "mcp__coursemate__draft_announcement"
+    ],
+    "ask": ["mcp__coursemate__send_announcement"],
+    "deny": [
+      "Bash(py -m coursemate approve:*)",
+      "Bash(python -m coursemate approve:*)",
+      "Edit(outbox/**)",
+      "Write(outbox/**)"
+    ]
+  }
+}

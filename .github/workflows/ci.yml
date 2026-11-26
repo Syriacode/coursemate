@@ -55,3 +55,6 @@ jobs:
 
       - name: Smoke test the agent eval (fake model)
         run: python -m coursemate --provider fake eval-agent notes/sample evals/agent_cases.jsonl --min-score 0.1
+
+      - name: Smoke test the MCP server (raw JSON-RPC over stdio, fake model)
+        run: python -m coursemate.mcp_raw
