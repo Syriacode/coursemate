@@ -19,6 +19,18 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def no_tracing_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hide a loaded .env from every test, so no test sends spans to Langfuse or a log."""
+    for name in (
+        "LANGFUSE_BASE_URL",
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_SECRET_KEY",
+        "COURSEMATE_SPAN_LOG",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def spans() -> Iterator[InMemorySpanExporter]:
     """Collect finished spans in memory instead of sending them anywhere."""

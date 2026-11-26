@@ -8,9 +8,10 @@ import pytest
 from psycopg import sql
 
 from coursemate.agent_tools import Outbox
-from coursemate.cli import main
+from coursemate.cli import build_parser, main
 from coursemate.embeddings import FakeEmbedder
 from coursemate.llm import FakeClient, ToolCall
+from coursemate.tracing import tracer
 from tests.conftest import TEST_DB, require_db
 
 SAMPLE = Path(__file__).parents[1] / "notes" / "sample"
@@ -115,6 +116,49 @@ def test_serve_with_a_hosted_llm_and_no_key_is_a_clear_error(monkeypatch):
 
     assert code == 1
     assert "costs money" in err
+    assert "tracing: off" in err
+
+
+def test_serve_shuts_tracing_down_when_it_fails_early(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    log = tmp_path / "spans.jsonl"
+
+    code, _, err = run("--provider", "fake", "--span-log", str(log), "serve", "--llm", "openai")
+
+    assert code == 1
+    assert f"tracing: span log {log}" in err
+    assert not tracer().start_span("x").is_recording()
+
+
+def test_span_log_defaults_to_the_environment_variable(monkeypatch):
+    assert build_parser().parse_args(["serve"]).span_log is None
+
+    monkeypatch.setenv("COURSEMATE_SPAN_LOG", "logs/spans.jsonl")
+
+    assert build_parser().parse_args(["serve"]).span_log == Path("logs/spans.jsonl")
+    chosen = build_parser().parse_args(["--span-log", "other.jsonl", "serve"])
+    assert chosen.span_log == Path("other.jsonl")
+
+
+@pytest.mark.db
+def test_serve_traces_while_the_server_runs(cli_table, tmp_path, monkeypatch):
+    code, _, _ = run(*fake_args(cli_table), "ingest", str(SAMPLE), "--reset")
+    assert code == 0
+    log = tmp_path / "spans.jsonl"
+
+    def fake_run(app, host, port):
+        tracer().start_span("while-serving").end()
+
+    monkeypatch.setattr("uvicorn.run", fake_run)
+
+    code, _, err = run(*fake_args(cli_table), "--span-log", str(log), "serve")
+
+    assert code == 0, err
+    assert f"tracing: span log {log}" in err
+    # the span reached the file, so shutdown flushed the batch; and tracing is off again
+    assert json.loads(log.read_text(encoding="utf-8"))["name"] == "while-serving"
+    assert not tracer().start_span("x").is_recording()
 
 
 @pytest.mark.db

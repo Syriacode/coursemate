@@ -29,8 +29,15 @@ from coursemate.retrieval_eval import (
 )
 from coursemate.store import PgVectorStore, StoreError
 from coursemate.streaming import make_streamer
+from coursemate.tracing import setup_tracing, shutdown_tracing
 
 DEFAULT_DB = "postgresql://coursemate:coursemate@127.0.0.1:5433/coursemate"
+
+
+def _env_path(name: str) -> Path | None:
+    """The path in an environment variable, or None when it is unset or empty."""
+    value = os.environ.get(name)
+    return Path(value) if value else None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,6 +61,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--db-url", default=os.environ.get("DATABASE_URL") or DEFAULT_DB)
     parser.add_argument("--table", default=os.environ.get("COURSEMATE_TABLE") or "chunks")
+    parser.add_argument(
+        "--span-log",
+        type=Path,
+        default=_env_path("COURSEMATE_SPAN_LOG"),
+        metavar="PATH",
+        help="also write each finished span to this JSON Lines file",
+    )
 
     subcommands = parser.add_subparsers(dest="command", required=True)
     ingest_parser = subcommands.add_parser("ingest")
@@ -169,6 +183,12 @@ def run_compare(
     return 0
 
 
+def start_tracing(args: argparse.Namespace, stderr: TextIO) -> None:
+    """Turn tracing on if there is somewhere to send spans, and say where."""
+    destinations = setup_tracing(args.span_log)
+    print(f"tracing: {', '.join(destinations) or 'off'}", file=stderr)
+
+
 def ask_instructor(outbox: Outbox, stdout: TextIO) -> Approver:
     """An approver that shows the exact draft and asks the person at the keyboard.
 
@@ -217,6 +237,7 @@ def run_agent_command(
     stderr: TextIO,
 ) -> int:
     """Run the agent on one task, printing every step. A human approves each send."""
+    start_tracing(args, stderr)
     try:
         store = PgVectorStore(args.db_url, table=args.table)
         try:
@@ -238,6 +259,8 @@ def run_agent_command(
     except (StoreError, LLMError) as err:
         print(f"error: {err}", file=stderr)
         return 1
+    finally:
+        shutdown_tracing()  # send the last batch of spans before the program exits
 
     print(f"\n{result.answer}", file=stdout)
     print(
@@ -275,6 +298,14 @@ def run_eval_agent(
 
 def run_serve(args: argparse.Namespace, embedder: Embedder, stderr: TextIO) -> int:
     """Start the web API. It blocks until the server is stopped (Ctrl+C)."""
+    start_tracing(args, stderr)
+    try:
+        return _serve(args, embedder, stderr)
+    finally:
+        shutdown_tracing()  # send the last batch of spans before the program exits
+
+
+def _serve(args: argparse.Namespace, embedder: Embedder, stderr: TextIO) -> int:
     try:
         # first, so a bad provider name or a missing API key fails before we touch the database
         llm = make_streamer(args.llm or args.provider, args.chat_model, args.ollama_url)
